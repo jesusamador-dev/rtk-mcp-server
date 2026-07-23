@@ -35,11 +35,15 @@ El servidor expone el siguiente menú de herramientas a tu cliente MCP:
 
 ## 🚀 Inicio Rápido (2 pasos)
 
-**1. Instala el comando `rtk-index`** (una línea):
+**1. Instala el comando `rtk-index`.** Elige una:
 ```bash
+# Con cargo (requiere Rust; funciona hoy en cualquier plataforma):
+cargo install --git https://github.com/jesusamador-dev/rtk-mcp-server --bin rtk-index
+
+# O con el script (binario precompilado si existe para tu plataforma; si no, cae a cargo):
 curl -fsSL https://raw.githubusercontent.com/jesusamador-dev/rtk-mcp-server/main/install.sh | sh
 ```
-Descarga un binario precompilado si existe para tu plataforma; si no, lo compila con `cargo`. Deja `rtk-index` en tu `PATH`.
+Cualquiera deja `rtk-index` en tu `PATH` (`~/.cargo/bin` con cargo, o `~/.local/bin` con el script).
 
 **2. Inicializa tu proyecto** (desde su raíz):
 ```bash
@@ -53,13 +57,9 @@ Esto indexa AST + BM25, **vectoriza el proyecto completo una sola vez** y crea/a
 **¿Dudas del entorno?** `rtk-index check` verifica que todo esté listo (rtk, modelo, git).
 
 <details>
-<summary>Instalación manual (sin script)</summary>
+<summary>Compilar desde el repo (alternativa)</summary>
 
 ```bash
-# Opción A — con cargo (requiere Rust):
-cargo install --git https://github.com/jesusamador-dev/rtk-mcp-server --bin rtk-index
-
-# Opción B — compilar el repo:
 git clone git@github.com:jesusamador-dev/rtk-mcp-server.git
 cd rtk-mcp-server && cargo build --release   # binario en target/release/rtk-index
 ```
