@@ -1,0 +1,75 @@
+//! symbol_lookup(name, path?): devuelve la definición exacta de un símbolo
+//! (una función/clase/struct), con su ancla path:líneas, sin leer el archivo
+//! entero. Usa el índice persistente y lo sincroniza incrementalmente antes.
+
+use crate::index;
+use serde_json::{json, Value};
+
+const MAX_BODIES: usize = 6; // límite de cuerpos completos para acotar tokens
+
+pub fn execute(params: &Value) -> Result<Value, String> {
+    let arguments = params.get("arguments").unwrap_or(&Value::Null);
+    let name = arguments
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing 'name' argument")?;
+    let root = arguments
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or(".");
+
+    let mut ws = index::Workspace::open(root)?;
+    let stats = ws.sync()?;
+    let rows = ws.lookup_symbol(name)?;
+
+    let freshness = format!(
+        "[índice: {} archivos, {} re-indexados, {} eliminados]",
+        stats.total_files, stats.reindexed, stats.removed
+    );
+
+    if rows.is_empty() {
+        return Ok(text(format!(
+            "Ningún símbolo llamado '{}' encontrado.\n{} ({} símbolos totales)",
+            name,
+            freshness,
+            ws.symbol_count()
+        )));
+    }
+
+    let mut out = vec![format!(
+        "{} coincidencia(s) para '{}'  {}",
+        rows.len(),
+        name,
+        freshness
+    )];
+
+    for (i, r) in rows.iter().enumerate() {
+        out.push(String::new());
+        out.push(format!(
+            "── {} · {} · {}:L{}-{}",
+            r.name, r.kind, r.path, r.start_line, r.end_line
+        ));
+        if i < MAX_BODIES {
+            match index::read_line_range(&r.path, r.start_line, r.end_line) {
+                Ok(code) => out.push(code.trim_end().to_string()),
+                Err(e) => out.push(format!("[no se pudo leer el cuerpo: {}]", e)),
+            }
+        } else {
+            out.push(format!("   {}", r.signature));
+        }
+    }
+
+    if rows.len() > MAX_BODIES {
+        out.push(String::new());
+        out.push(format!(
+            "[+{} coincidencias mostradas solo como firma; refina el nombre para ver su cuerpo]",
+            rows.len() - MAX_BODIES
+        ));
+    }
+
+    Ok(text(out.join("\n")))
+}
+
+fn text(body: String) -> Value {
+    json!({ "content": [{ "type": "text", "text": body }] })
+}
