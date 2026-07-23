@@ -33,32 +33,37 @@ El servidor expone el siguiente menú de herramientas a tu cliente MCP:
 
 ---
 
-## 🚀 Instalación y Uso (CLI)
+## 🚀 Inicio Rápido (2 pasos)
 
-Este proyecto incluye una interfaz de línea de comandos (CLI) que hace todo el trabajo pesado de indexación y configuración por ti.
+**1. Instala el comando `rtk-index`** (una línea):
+```bash
+curl -fsSL https://raw.githubusercontent.com/jesusamador-dev/rtk-mcp-server/main/install.sh | sh
+```
+Descarga un binario precompilado si existe para tu plataforma; si no, lo compila con `cargo`. Deja `rtk-index` en tu `PATH`.
 
-1. Clona el repositorio y compila en modo Release:
-   ```bash
-   git clone git@github.com:jesusamador-dev/rtk-mcp-server.git
-   cd rtk-mcp-server
-   cargo build --release
-   ```
-   *Opcional: puedes mover el binario resultante a tu `$PATH` (ej. `/usr/local/bin/rtk-mcp-server`).*
+**2. Inicializa tu proyecto** (desde su raíz):
+```bash
+cd tu-proyecto
+rtk-index init .
+```
+Esto indexa AST + BM25, **vectoriza el proyecto completo una sola vez** y crea/actualiza `.mcp.json`. Luego **reinicia Claude Code** y las herramientas quedan calientes, sin esperas.
 
-2. **Inicializa tu proyecto (Recomendado para Claude Code):**
-   Navega a la raíz del proyecto de código que deseas que la IA analice y ejecuta el comando `init`. Esto indexa el AST y BM25, **vectoriza el proyecto completo de una sola vez** (sin el tope por-llamada) y crea/actualiza automáticamente el archivo `.mcp.json`.
-   ```bash
-   /ruta/a/rtk-mcp-server/target/release/rtk-mcp-server init .
-   ```
-   > ⚠️ **Primera ejecución:** descarga una vez el modelo de embeddings (~130 MB, requiere conexión) y lo cachea en `~/.cache/rtk-mcp-server/`. La vectorización de un monorepo grande puede tardar unos minutos; es un costo único — después `init` es incremental (solo re-vectoriza lo que cambió).
+> ⚠️ **Primera ejecución:** descarga una vez el modelo de embeddings (~130 MB, requiere conexión) a `~/.cache/rtk-mcp-server/`. Vectorizar un monorepo grande tarda unos minutos; es un costo único — después `init` es incremental (solo re-vectoriza lo que cambió). La escritura de `.mcp.json` es segura: preserva los servidores que ya tuvieras.
 
-   *¡Listo! Reinicia Claude Code en ese directorio y las herramientas quedan calientes, sin esperas. La escritura de `.mcp.json` es segura: preserva los servidores que ya tuvieras configurados.*
+**¿Dudas del entorno?** `rtk-index check` verifica que todo esté listo (rtk, modelo, git).
 
-3. **Arrancar el servidor (uso interno de clientes):**
-   El cliente MCP lanzará automáticamente el servidor en segundo plano usando el comando `serve`:
-   ```bash
-   rtk-mcp-server serve --root .
-   ```
+<details>
+<summary>Instalación manual (sin script)</summary>
+
+```bash
+# Opción A — con cargo (requiere Rust):
+cargo install --git https://github.com/jesusamador-dev/rtk-mcp-server --bin rtk-index
+
+# Opción B — compilar el repo:
+git clone git@github.com:jesusamador-dev/rtk-mcp-server.git
+cd rtk-mcp-server && cargo build --release   # binario en target/release/rtk-index
+```
+</details>
 
 ---
 
@@ -66,13 +71,15 @@ Este proyecto incluye una interfaz de línea de comandos (CLI) que hace todo el 
 
 Los servidores MCP que utilizan el protocolo `stdio` no se ejecutan como un demonio (daemon) tradicional. Tu cliente de IA iniciará el servidor automáticamente al arrancar. Solo debes añadir la ruta absoluta de tu ejecutable.
 
+> Tras instalar, el comando queda como `rtk-index` en tu `PATH` (ej. `~/.local/bin/rtk-index` o `~/.cargo/bin/rtk-index`). Usa esa ruta abajo.
+
 ### En Claude Desktop
 Edita el archivo de configuración `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
     "rtk-index": {
-      "command": "/ruta/absoluta/a/tu/rtk-mcp-server/target/release/rtk-mcp-server",
+      "command": "/ruta/absoluta/a/rtk-index",
       "args": ["serve", "--root", "/ruta/a/tu/proyecto"]
     }
   }
@@ -83,13 +90,13 @@ Edita el archivo de configuración `claude_desktop_config.json`:
 1. Ve a **Cursor Settings > Features > MCP Servers**.
 2. Da click en **+ Add New MCP Server**.
 3. **Type:** `command`
-4. **Name:** `rtk-server`
-5. **Command:** `/ruta/absoluta/a/tu/rtk-mcp-server/target/release/rtk-mcp-server`
+4. **Name:** `rtk-index`
+5. **Command:** `/ruta/absoluta/a/rtk-index`
 
 ### En Claude Code (CLI)
-Lo más simple es correr `init` (configura `.mcp.json` por ti). Si prefieres registrarlo a mano, pasa los argumentos tras `--` para no perder la raíz del proyecto:
+Lo más simple es correr `rtk-index init .` (configura `.mcp.json` por ti). Si prefieres registrarlo a mano, pasa los argumentos tras `--` para no perder la raíz del proyecto:
 ```bash
-claude mcp add rtk-index -- /ruta/absoluta/a/rtk-mcp-server/target/release/rtk-mcp-server serve --root /ruta/a/tu/proyecto
+claude mcp add rtk-index -- /ruta/absoluta/a/rtk-index serve --root /ruta/a/tu/proyecto
 ```
 
 ---

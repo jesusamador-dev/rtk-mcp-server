@@ -61,6 +61,9 @@ fn main() {
             let root = args.get(2).map(|s| s.as_str()).unwrap_or(".");
             std::process::exit(cli::run_init(root));
         }
+        Some("check") => {
+            std::process::exit(cli::run_check());
+        }
         Some("serve") => {
             // --root <ruta>: raíz por defecto para las herramientas de índice.
             if let Some(i) = args.iter().position(|a| a == "--root") {
@@ -72,11 +75,12 @@ fn main() {
         }
         Some("--help") | Some("-h") | Some("help") => {
             eprintln!(
-                "rtk-mcp-server — servidor MCP con índice de código\n\n\
+                "rtk-index — servidor MCP con índice de código\n\n\
                  USO:\n  \
-                 rtk-mcp-server init [ruta]        Indexa el workspace (1 vez) y configura .mcp.json\n  \
-                 rtk-mcp-server serve [--root R]   Corre el servidor MCP (lo lanza Claude Code)\n  \
-                 rtk-mcp-server                    Igual que 'serve' (compatibilidad)"
+                 rtk-index init [ruta]        Indexa el workspace (1 vez) y configura .mcp.json\n  \
+                 rtk-index check              Verifica el entorno (rtk, modelo, git)\n  \
+                 rtk-index serve [--root R]   Corre el servidor MCP (lo lanza Claude Code)\n  \
+                 rtk-index                    Igual que 'serve' (compatibilidad)"
             );
         }
         None => run_server(),

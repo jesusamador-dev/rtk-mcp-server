@@ -72,6 +72,65 @@ pub fn run_init(root: &str) -> i32 {
     0
 }
 
+/// `check`: verifica el entorno antes de trabajar (estilo doctor).
+pub fn run_check() -> i32 {
+    eprintln!("rtk-index check — verificando entorno\n");
+    let mut warnings = 0;
+
+    // Binario en uso.
+    if let Ok(exe) = std::env::current_exe() {
+        eprintln!("  • binario: {}", exe.display());
+    }
+
+    // rtk (para rtk_grep / rtk_find).
+    if on_path("rtk") {
+        eprintln!("  ✓ rtk disponible (habilita rtk_grep / rtk_find)");
+    } else {
+        warnings += 1;
+        eprintln!("  ⚠ rtk no está en el PATH — rtk_grep/rtk_find no funcionarán (el índice sí)");
+    }
+
+    // Modelo de embeddings cacheado.
+    let model = std::env::var("HOME")
+        .map(|h| Path::new(&h).join(".cache/rtk-mcp-server/fastembed"))
+        .ok()
+        .filter(|p| p.exists() && p.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false));
+    if model.is_some() {
+        eprintln!("  ✓ modelo de embeddings cacheado (búsqueda semántica lista)");
+    } else {
+        eprintln!("  • modelo de embeddings aún no descargado — se bajará (~130 MB) en el primer `init`");
+    }
+
+    // git (informativo: el índice respeta .gitignore).
+    if Path::new(".git").exists() {
+        eprintln!("  ✓ repositorio git detectado (se respetará .gitignore)");
+    } else {
+        eprintln!("  • no es un repo git aquí (opcional)");
+    }
+
+    eprintln!(
+        "\n{}",
+        if warnings == 0 {
+            "Todo listo. Ejecuta `rtk-index init .` en tu proyecto.".to_string()
+        } else {
+            format!("{} advertencia(s). Puedes continuar; revisa lo marcado con ⚠.", warnings)
+        }
+    );
+    0
+}
+
+/// ¿Existe un ejecutable `bin` en el PATH?
+fn on_path(bin: &str) -> bool {
+    std::env::var("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                let p = dir.join(bin);
+                p.is_file()
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn write_mcp_config(root: &str) -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("no se pudo resolver el binario: {}", e))?

@@ -5,6 +5,12 @@ edition = "2021"
 description = "A Model Context Protocol server integrated with Rust Token Killer (RTK)"
 authors = ["Kuosel System"]
 
+# El comando/binario para el usuario es `rtk-index` (corto). El crate sigue
+# llamándose rtk-mcp-server.
+[[bin]]
+name = "rtk-index"
+path = "src/main.rs"
+
 [dependencies]
 ignore = "0.4.31"
 regex = "1.13.1"
