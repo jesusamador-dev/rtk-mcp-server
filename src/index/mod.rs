@@ -253,7 +253,13 @@ impl Workspace {
                 let body = slice_lines(&lines, s.start_line, s.end_line);
                 let mut t = format!("{}\n{}", s.name, body);
                 if t.len() > EMBED_TEXT_MAX_CHARS {
-                    t.truncate(EMBED_TEXT_MAX_CHARS);
+                    // truncate() cuenta bytes y exige un límite de carácter válido;
+                    // retrocede hasta uno para no partir un multibyte (á, ñ, emoji…).
+                    let mut end = EMBED_TEXT_MAX_CHARS;
+                    while !t.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    t.truncate(end);
                 }
                 all_texts.push(t);
             }

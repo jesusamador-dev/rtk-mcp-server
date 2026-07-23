@@ -89,7 +89,12 @@ fn to_symbol(node: Node, src: &[u8]) -> Option<Symbol> {
     // Firma = primera línea del nodo (encabezado sin cuerpo), acotada.
     let mut signature = full.lines().next().unwrap_or("").trim().to_string();
     if signature.len() > 200 {
-        signature.truncate(200);
+        // Retrocede a un límite de carácter válido para no partir un multibyte.
+        let mut end = 200;
+        while !signature.is_char_boundary(end) {
+            end -= 1;
+        }
+        signature.truncate(end);
         signature.push('…');
     }
     Some(Symbol {
