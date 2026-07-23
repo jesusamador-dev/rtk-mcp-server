@@ -1,5 +1,5 @@
-//! Embeddings locales con fastembed (ONNX, CPU). Modelo BGE-small-en-v1.5,
-//! 384 dimensiones. El modelo se descarga una vez (~130MB) y queda cacheado.
+//! Embeddings locales con fastembed (ONNX, CPU). Modelo multilingual-e5-small,
+//! 384 dimensiones. El modelo se descarga una vez (~470MB) y queda cacheado.
 //!
 //! La inicialización es cara (carga del modelo), así que se hace de forma
 //! perezosa: solo la búsqueda semántica la dispara, nunca symbol_lookup.
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 
 /// Caché del modelo en una ruta ABSOLUTA y estable. Sin esto, fastembed cachea
-/// en `./.fastembed_cache` relativo al CWD y re-descarga ~130MB en cada arranque
+/// en `./.fastembed_cache` relativo al CWD y re-descarga el modelo en cada arranque
 /// desde un directorio distinto.
 fn cache_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());

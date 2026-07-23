@@ -98,7 +98,7 @@ pub fn run_check() -> i32 {
     if model.is_some() {
         eprintln!("  ✓ modelo de embeddings cacheado (búsqueda semántica lista)");
     } else {
-        eprintln!("  • modelo de embeddings aún no descargado — se bajará (~130 MB) en el primer `init`");
+        eprintln!("  • modelo de embeddings aún no descargado — se bajará (~470 MB) en el primer `init`");
     }
 
     // git (informativo: el índice respeta .gitignore).

@@ -48,7 +48,7 @@ rtk-index init .
 ```
 Esto indexa AST + BM25, **vectoriza el proyecto completo una sola vez** y crea/actualiza `.mcp.json`. Luego **reinicia Claude Code** y las herramientas quedan calientes, sin esperas.
 
-> ⚠️ **Primera ejecución:** descarga una vez el modelo de embeddings (~130 MB, requiere conexión) a `~/.cache/rtk-mcp-server/`. Vectorizar un monorepo grande tarda unos minutos; es un costo único — después `init` es incremental (solo re-vectoriza lo que cambió). La escritura de `.mcp.json` es segura: preserva los servidores que ya tuvieras.
+> ⚠️ **Primera ejecución:** descarga una vez el modelo de embeddings multilingüe (~470 MB, requiere conexión) a `~/.cache/rtk-mcp-server/`. Vectorizar un monorepo grande tarda unos minutos; es un costo único — después `init` es incremental (solo re-vectoriza lo que cambió). La escritura de `.mcp.json` es segura: preserva los servidores que ya tuvieras.
 
 **¿Dudas del entorno?** `rtk-index check` verifica que todo esté listo (rtk, modelo, git).
 
