@@ -33,24 +33,34 @@ El servidor expone el siguiente menú de herramientas a tu cliente MCP:
 
 ---
 
-## 🚀 Instalación y Compilación
+## 🚀 Instalación y Uso (CLI)
 
-Debido a que este es un servidor stdio de alto rendimiento, debes compilar el binario localmente.
+Este proyecto incluye una interfaz de línea de comandos (CLI) que hace todo el trabajo pesado de indexación y configuración por ti.
 
-1. Clona el repositorio:
+1. Clona el repositorio y compila en modo Release:
    ```bash
    git clone git@github.com:jesusamador-dev/rtk-mcp-server.git
    cd rtk-mcp-server
-   ```
-2. Compila en modo Release:
-   ```bash
    cargo build --release
    ```
-   *El binario resultante se guardará en `target/release/rtk-mcp-server`.*
+   *Opcional: puedes mover el binario resultante a tu `$PATH` (ej. `/usr/local/bin/rtk-mcp-server`).*
+
+2. **Inicializa tu proyecto (Recomendado para Claude Code):**
+   Navega a la raíz del proyecto de código que deseas que la IA analice y ejecuta el comando `init`. Esto pre-calculará los vectores semánticos, el árbol AST y creará automáticamente el archivo `.mcp.json`.
+   ```bash
+   /ruta/a/rtk-mcp-server/target/release/rtk-mcp-server init .
+   ```
+   *¡Listo! Reinicia Claude Code en ese directorio y las herramientas ya estarán inyectadas a máxima velocidad.*
+
+3. **Arrancar el servidor (uso interno de clientes):**
+   El cliente MCP lanzará automáticamente el servidor en segundo plano usando el comando `serve`:
+   ```bash
+   rtk-mcp-server serve --root .
+   ```
 
 ---
 
-## 🔌 Configuración en Clientes MCP
+## 🔌 Configuración Manual en otros clientes MCP (Cursor, Claude Desktop)
 
 Los servidores MCP que utilizan el protocolo `stdio` no se ejecutan como un demonio (daemon) tradicional. Tu cliente de IA iniciará el servidor automáticamente al arrancar. Solo debes añadir la ruta absoluta de tu ejecutable.
 
@@ -59,9 +69,9 @@ Edita el archivo de configuración `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "rtk-server": {
+    "rtk-index": {
       "command": "/ruta/absoluta/a/tu/rtk-mcp-server/target/release/rtk-mcp-server",
-      "args": []
+      "args": ["serve", "--root", "/ruta/a/tu/proyecto"]
     }
   }
 }
