@@ -12,6 +12,14 @@ pub fn run_init(root: &str) -> i32 {
         .unwrap_or_else(|_| root.to_string());
     eprintln!("rtk-index init → {}\n", root_abs);
 
+    let sdd = detect_sdd(&root_abs);
+    if !sdd.is_empty() {
+        eprintln!(
+            "  SDD detectado: {} — se indexan sus specs markdown (excluyendo openspec/changes/archive).\n",
+            sdd.join(" + ")
+        );
+    }
+
     // 1) Símbolos + BM25 (tree-sitter + tantivy).
     eprintln!("[1/3] Indexando símbolos y texto (tree-sitter + BM25)…");
     let mut ws = match Workspace::open(&root_abs) {
@@ -111,6 +119,12 @@ pub fn run_check() -> i32 {
         eprintln!("  • no es un repo git aquí (opcional)");
     }
 
+    // SDD (OpenSpec / Spec Kit).
+    let sdd = detect_sdd(".");
+    if !sdd.is_empty() {
+        eprintln!("  ✓ SDD detectado: {} (sus specs markdown se indexan)", sdd.join(" + "));
+    }
+
     eprintln!(
         "\n{}",
         if warnings == 0 {
@@ -120,6 +134,19 @@ pub fn run_check() -> i32 {
         }
     );
     0
+}
+
+/// Detecta sistemas de Spec-Driven Development presentes en el repo.
+fn detect_sdd(root: &str) -> Vec<&'static str> {
+    let p = Path::new(root);
+    let mut found = Vec::new();
+    if p.join("openspec").is_dir() {
+        found.push("OpenSpec");
+    }
+    if p.join(".specify").is_dir() || p.join("memory/constitution.md").is_file() {
+        found.push("Spec Kit");
+    }
+    found
 }
 
 /// ¿Existe un ejecutable `bin` en el PATH?

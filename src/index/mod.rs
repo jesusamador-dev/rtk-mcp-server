@@ -107,6 +107,10 @@ impl Workspace {
             if path.components().any(|c| c.as_os_str() == ".rtk-index") {
                 continue;
             }
+            // OpenSpec: el histórico archivado es ruido (cientos de miles de tokens).
+            if path.to_string_lossy().contains("openspec/changes/archive/") {
+                continue;
+            }
 
             let path_str = path.to_string_lossy().to_string();
             seen.insert(path_str.clone());

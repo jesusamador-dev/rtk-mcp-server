@@ -45,11 +45,21 @@ fn language_for(ext: &str) -> Option<(Language, &'static [&'static str])> {
 }
 
 pub fn is_supported(ext: &str) -> bool {
-    language_for(ext).is_some()
+    is_markdown(ext) || language_for(ext).is_some()
+}
+
+fn is_markdown(ext: &str) -> bool {
+    matches!(ext, "md" | "markdown" | "mdx")
 }
 
 pub fn parse(path: &Path, source: &str) -> Vec<Symbol> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Markdown (specs OpenSpec/Spec Kit, docs, README): secciones por encabezado.
+    if is_markdown(ext) {
+        return parse_markdown(source);
+    }
+
     let (lang, kinds) = match language_for(ext) {
         Some(x) => x,
         None => return Vec::new(),
@@ -104,4 +114,81 @@ fn to_symbol(node: Node, src: &[u8]) -> Option<Symbol> {
         start_line: node.start_position().row + 1,
         end_line: node.end_position().row + 1,
     })
+}
+
+// ---- Markdown: cada encabezado ATX es una sección/símbolo ----
+
+struct Heading {
+    line0: usize, // índice de línea 0-based del encabezado
+    level: usize, // 1..=6
+    text: String,
+}
+
+fn parse_markdown(source: &str) -> Vec<Symbol> {
+    let lines: Vec<&str> = source.lines().collect();
+    let total = lines.len();
+
+    // 1) Recolectar encabezados, ignorando los que están dentro de fences ``` o ~~~.
+    let mut heads: Vec<Heading> = Vec::new();
+    let mut in_fence = false;
+    for (i, raw) in lines.iter().enumerate() {
+        let t = raw.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let hashes = t.chars().take_while(|&c| c == '#').count();
+        if (1..=6).contains(&hashes) {
+            let rest = &t[hashes..];
+            if rest.is_empty() || rest.starts_with(' ') {
+                let text = rest.trim().trim_end_matches('#').trim().to_string();
+                if !text.is_empty() {
+                    heads.push(Heading {
+                        line0: i,
+                        level: hashes,
+                        text,
+                    });
+                }
+            }
+        }
+    }
+
+    // 2) Cada encabezado → símbolo cuya sección termina antes del próximo
+    //    encabezado de nivel igual o superior (o EOF).
+    let mut out = Vec::with_capacity(heads.len());
+    for (idx, h) in heads.iter().enumerate() {
+        let mut end_line = total; // 1-based última línea si no hay siguiente
+        for next in &heads[idx + 1..] {
+            if next.level <= h.level {
+                end_line = next.line0; // 0-based del siguiente == 1-based de la línea previa
+                break;
+            }
+        }
+        let start_line = h.line0 + 1;
+        if end_line < start_line {
+            end_line = start_line;
+        }
+        out.push(Symbol {
+            kind: format!("h{}", h.level),
+            name: h.text.clone(),
+            signature: cap_chars(&format!("{} {}", "#".repeat(h.level), h.text), 200),
+            start_line,
+            end_line,
+        });
+    }
+    out
+}
+
+fn cap_chars(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
