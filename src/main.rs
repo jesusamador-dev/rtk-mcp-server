@@ -1,3 +1,5 @@
+mod cli;
+mod context;
 mod index;
 mod tools;
 
@@ -53,6 +55,39 @@ fn send_error(id: Value, code: i32, message: &str) {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(|s| s.as_str()) {
+        Some("init") => {
+            let root = args.get(2).map(|s| s.as_str()).unwrap_or(".");
+            std::process::exit(cli::run_init(root));
+        }
+        Some("serve") => {
+            // --root <ruta>: raíz por defecto para las herramientas de índice.
+            if let Some(i) = args.iter().position(|a| a == "--root") {
+                if let Some(r) = args.get(i + 1) {
+                    let _ = context::DEFAULT_ROOT.set(r.clone());
+                }
+            }
+            run_server();
+        }
+        Some("--help") | Some("-h") | Some("help") => {
+            eprintln!(
+                "rtk-mcp-server — servidor MCP con índice de código\n\n\
+                 USO:\n  \
+                 rtk-mcp-server init [ruta]        Indexa el workspace (1 vez) y configura .mcp.json\n  \
+                 rtk-mcp-server serve [--root R]   Corre el servidor MCP (lo lanza Claude Code)\n  \
+                 rtk-mcp-server                    Igual que 'serve' (compatibilidad)"
+            );
+        }
+        None => run_server(),
+        Some(other) => {
+            eprintln!("Comando desconocido: '{}'. Usa: init | serve | --help", other);
+            std::process::exit(2);
+        }
+    }
+}
+
+fn run_server() {
     eprintln!("RTK MCP Server running on stdio");
     let stdin = io::stdin();
     let mut handle = stdin.lock();

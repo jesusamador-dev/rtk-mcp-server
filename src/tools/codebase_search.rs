@@ -17,7 +17,9 @@ pub fn execute(params: &Value) -> Result<Value, String> {
     let root = arguments
         .get("path")
         .and_then(|v| v.as_str())
-        .unwrap_or(".");
+        .map(String::from)
+        .unwrap_or_else(crate::context::default_root);
+    let root = root.as_str();
     let k = arguments
         .get("k")
         .and_then(|v| v.as_u64())
