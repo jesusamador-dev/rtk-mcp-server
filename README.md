@@ -50,7 +50,9 @@ Cualquiera deja `rtk-index` en tu `PATH` (`~/.cargo/bin` con cargo, o `~/.local/
 cd tu-proyecto
 rtk-index init .
 ```
-Esto indexa AST + BM25, **vectoriza el proyecto completo una sola vez** y crea/actualiza `.mcp.json`. Luego **reinicia Claude Code** y las herramientas quedan calientes, sin esperas.
+Esto indexa AST + BM25, **vectoriza el proyecto completo una sola vez** y crea/actualiza `.mcp.json` con `alwaysLoad: true` (las herramientas quedan **siempre visibles** para el modelo, sin quedar diferidas por el *tool-search* aunque tengas muchos otros MCP conectados). Luego **reinicia Claude Code** y quedan calientes, sin esperas.
+
+> Requiere **Claude Code v2.1.121+** (para `alwaysLoad`). Sin esa versión las herramientas siguen funcionando, solo que podrían diferirse.
 
 > ⚠️ **Primera ejecución:** descarga una vez el modelo de embeddings multilingüe (~470 MB, requiere conexión) a `~/.cache/rtk-mcp-server/`. Vectorizar un monorepo grande tarda unos minutos; es un costo único — después `init` es incremental (solo re-vectoriza lo que cambió). La escritura de `.mcp.json` es segura: preserva los servidores que ya tuvieras.
 
@@ -80,11 +82,13 @@ Edita el archivo de configuración `claude_desktop_config.json`:
   "mcpServers": {
     "rtk-index": {
       "command": "/ruta/absoluta/a/rtk-index",
-      "args": ["serve", "--root", "/ruta/a/tu/proyecto"]
+      "args": ["serve", "--root", "/ruta/a/tu/proyecto"],
+      "alwaysLoad": true
     }
   }
 }
 ```
+> `"alwaysLoad": true` mantiene las herramientas siempre cargadas (no diferidas por *tool-search*). El `init` ya lo escribe por ti.
 
 ### En Cursor IDE
 1. Ve a **Cursor Settings > Features > MCP Servers**.

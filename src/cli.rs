@@ -66,8 +66,11 @@ pub fn run_init(root: &str) -> i32 {
     }
 
     eprintln!(
-        "\n✓ Listo. Reinicia Claude Code en el proyecto y ya puedes usar:\n  \
-         codebase_search · symbol_lookup · file_outline (índice caliente, sin esperas)."
+        "\n✓ Listo. Reinicia Claude Code en el proyecto.\n  \
+         Con `alwaysLoad: true`, las herramientas rtk-index quedan SIEMPRE visibles\n  \
+         (codebase_search · symbol_lookup · file_outline · rtk_grep · rtk_find),\n  \
+         sin depender de tool-search. Índice caliente, sin esperas.\n  \
+         Requiere Claude Code v2.1.121+."
     );
     0
 }
@@ -148,9 +151,13 @@ fn write_mcp_config(root: &str) -> Result<(), String> {
     if !cfg.get("mcpServers").map_or(false, |v| v.is_object()) {
         cfg["mcpServers"] = json!({});
     }
+    // alwaysLoad: true → las herramientas de rtk-index quedan SIEMPRE cargadas en
+    // el contexto (no diferidas por tool-search), sin afectar a otros servidores.
+    // Requiere Claude Code v2.1.121+.
     cfg["mcpServers"]["rtk-index"] = json!({
         "command": exe,
-        "args": ["serve", "--root", root]
+        "args": ["serve", "--root", root],
+        "alwaysLoad": true
     });
 
     let pretty = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
