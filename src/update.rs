@@ -197,20 +197,31 @@ fn which(bin: &str) -> bool {
 }
 
 /// Versión publicada: la del `Cargo.toml` de `main` en GitHub.
+///
+/// Se consulta la API de contenidos y no `raw.githubusercontent`, porque su
+/// CDN cachea ~5 min y justo después de publicar devolvería la versión vieja.
+/// El `raw` queda de respaldo por si la API está limitada por rate limit.
 fn remote_version() -> Option<String> {
-    let url = format!(
-        "https://raw.githubusercontent.com/{}/main/Cargo.toml",
+    let api = format!(
+        "https://api.github.com/repos/{}/contents/Cargo.toml?ref=main",
         REPO
     );
-    let out = Command::new("curl")
-        .args(["-fsSL", "--max-time", "10", &url])
-        .output()
-        .ok()?;
+    let raw = format!("https://raw.githubusercontent.com/{}/main/Cargo.toml", REPO);
+    fetch(&api, true).and_then(|t| parse_version(&t))
+        .or_else(|| fetch(&raw, false).and_then(|t| parse_version(&t)))
+}
+
+fn fetch(url: &str, github_api: bool) -> Option<String> {
+    let mut cmd = Command::new("curl");
+    cmd.args(["-fsSL", "--max-time", "10"]);
+    if github_api {
+        cmd.args(["-H", "Accept: application/vnd.github.raw"]);
+    }
+    let out = cmd.arg(url).output().ok()?;
     if !out.status.success() {
         return None;
     }
-    let txt = String::from_utf8_lossy(&out.stdout);
-    parse_version(&txt)
+    Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 /// Primera clave `version = "x.y.z"` del manifiesto (la de `[package]`).
