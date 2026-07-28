@@ -23,11 +23,16 @@ install_prebuilt() {
   url="https://github.com/$REPO/releases/latest/download/$1"
   mkdir -p "$INSTALL_DIR"
   echo "→ Descargando binario precompilado: $1"
-  if curl -fsSL "$url" -o "$INSTALL_DIR/$BIN"; then
-    chmod +x "$INSTALL_DIR/$BIN"
+  # A temporal + mv: reemplazar en un paso evita truncar un binario en uso
+  # (`rtk-index update` se actualiza a sí mismo).
+  tmp="$INSTALL_DIR/.$BIN.new.$$"
+  if curl -fsSL "$url" -o "$tmp"; then
+    chmod +x "$tmp"
+    mv -f "$tmp" "$INSTALL_DIR/$BIN"
     echo "✓ Instalado en $INSTALL_DIR/$BIN"
     return 0
   fi
+  rm -f "$tmp"
   echo "  (no disponible; intentaré compilar con cargo)"
   return 1
 }
@@ -64,3 +69,4 @@ echo ""
 echo "Siguiente paso — en la raíz de tu proyecto:"
 echo "    rtk-index init ."
 echo "Luego reinicia Claude Code. Verifica el entorno cuando quieras con: rtk-index check"
+echo "Para actualizar más adelante:  rtk-index update"

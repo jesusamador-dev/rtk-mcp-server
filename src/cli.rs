@@ -93,7 +93,11 @@ pub fn run_check() -> i32 {
 
     // Binario en uso.
     if let Ok(exe) = std::env::current_exe() {
-        eprintln!("  • binario: {}", exe.display());
+        eprintln!(
+            "  • rtk-index {} — {} (`rtk-index update --check` busca versiones nuevas)",
+            crate::update::VERSION,
+            exe.display()
+        );
     }
 
     // rtk (para rtk_grep / rtk_find).

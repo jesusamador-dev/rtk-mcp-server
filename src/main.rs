@@ -4,6 +4,7 @@ mod gain;
 mod index;
 mod telemetry;
 mod tools;
+mod update;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -69,6 +70,12 @@ fn main() {
         Some("gain") => {
             std::process::exit(gain::run(&args[2..]));
         }
+        Some("update") => {
+            std::process::exit(update::run(&args[2..]));
+        }
+        Some("--version") | Some("-V") | Some("version") => {
+            println!("rtk-index {}", update::VERSION);
+        }
         Some("serve") => {
             // --root <ruta>: raíz por defecto para las herramientas de índice.
             if let Some(i) = args.iter().position(|a| a == "--root") {
@@ -80,19 +87,21 @@ fn main() {
         }
         Some("--help") | Some("-h") | Some("help") => {
             eprintln!(
-                "rtk-index — servidor MCP con índice de código\n\n\
+                "rtk-index {} — servidor MCP con índice de código\n\n\
                  USO:\n  \
                  rtk-index init [ruta]        Indexa el workspace (1 vez) y configura .mcp.json\n  \
                  rtk-index check              Verifica el entorno (rtk, modelo, git)\n  \
                  rtk-index gain [opciones]    Muestra el ahorro de tokens medido (--help)\n  \
+                 rtk-index update [--check]   Actualiza el binario a la última versión\n  \
                  rtk-index serve [--root R]   Corre el servidor MCP (lo lanza Claude Code)\n  \
-                 rtk-index                    Igual que 'serve' (compatibilidad)"
+                 rtk-index                    Igual que 'serve' (compatibilidad)",
+                update::VERSION
             );
         }
         None => run_server(),
         Some(other) => {
             eprintln!(
-                "Comando desconocido: '{}'. Usa: init | check | gain | serve | --help",
+                "Comando desconocido: '{}'. Usa: init | check | gain | update | serve | --help",
                 other
             );
             std::process::exit(2);

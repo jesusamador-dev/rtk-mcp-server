@@ -62,6 +62,25 @@ Esto indexa AST + BM25, **vectoriza el proyecto completo una sola vez** y crea/a
 
 **¿Cuánto estás ahorrando?** `rtk-index gain` (ver abajo).
 
+**Para actualizar:** `rtk-index update` — un solo comando, sin recordar cómo lo instalaste.
+
+---
+
+## 🔄 Actualizar: `rtk-index update`
+
+Compara tu versión con la publicada en `main` y reinstala **con el mismo método con el que ya está instalado**: `cargo install --force` si el binario vive en el bin de cargo, o el `install.sh` del repo en cualquier otro caso (que a su vez usa el binario precompilado si existe para tu plataforma).
+
+```bash
+rtk-index update            # actualiza si hay versión nueva
+rtk-index update --check    # solo comprueba; sale con 1 si hay una nueva (útil en scripts)
+rtk-index update --force    # reinstala aunque estés al día
+rtk-index update --cargo    # fuerza el método cargo
+rtk-index update --script   # fuerza el método install.sh
+rtk-index --version
+```
+
+El índice de tus proyectos, su `.mcp.json` y la telemetría **se conservan**: solo se reemplaza el binario. Tras actualizar, reinicia Claude Code para que recargue el servidor MCP.
+
 ---
 
 ## 📊 Medir el ahorro: `rtk-index gain`
