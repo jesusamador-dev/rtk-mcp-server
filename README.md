@@ -15,6 +15,7 @@ Este proyecto nació como un puente para integrar *Rust Token Killer (RTK)*, per
 *   **Indexado de specs (SDD):** Detecta si el repo usa **OpenSpec** (`openspec/`) o **Spec Kit** (`.specify/` · `memory/constitution.md`) e indexa sus specs markdown por encabezado (`#`/`##`…), excluyendo `openspec/changes/archive/`. Así `codebase_search` recupera secciones de spec **y** código juntos — clave para no quemar tokens releyendo specs enteras en flujos Spec-Driven Development.
 *   **Integración con RTK:** Wrappers nativos para ejecutar `rtk grep` y `rtk find` logrando ahorros de tokens del 60% al 80%.
 *   **Menos tokens, no solo "más rápido":** El objetivo no es leer archivos a mayor velocidad (el I/O nativo apenas cambia el costo), sino **leer menos**: entregar a la IA el fragmento exacto en lugar del archivo completo. Para el caso en que sí necesitas varios archivos enteros, `bulk_read_files` usa lectura nativa multihilo (`std::fs`).
+*   **Telemetría de ahorro medido:** cada llamada compara la respuesta real contra su *baseline* (leer los archivos completos, o la salida cruda de `grep`/`find`/`git diff`) y lo registra. `rtk-index gain` te muestra cuántos tokens llevas ahorrados, por herramienta y por proyecto.
 
 ---
 
@@ -58,6 +59,57 @@ Esto indexa AST + BM25, **vectoriza el proyecto completo una sola vez** y crea/a
 > ⚠️ **Primera ejecución:** descarga una vez el modelo de embeddings multilingüe (~470 MB, requiere conexión) a `~/.cache/rtk-mcp-server/`. Vectorizar un monorepo grande tarda unos minutos; es un costo único — después `init` es incremental (solo re-vectoriza lo que cambió). La escritura de `.mcp.json` es segura: preserva los servidores que ya tuvieras.
 
 **¿Dudas del entorno?** `rtk-index check` verifica que todo esté listo (rtk, modelo, git).
+
+**¿Cuánto estás ahorrando?** `rtk-index gain` (ver abajo).
+
+---
+
+## 📊 Medir el ahorro: `rtk-index gain`
+
+Cada llamada MCP se registra con dos magnitudes: el **baseline** (lo que habría costado obtener la misma información sin la herramienta) y el coste **real** de la respuesta que recibe el modelo.
+
+| Herramienta | Baseline con el que se compara |
+| :--- | :--- |
+| `codebase_search` | Los archivos completos donde caen los resultados (lo que habría costado abrirlos con `Read`) |
+| `symbol_lookup` | Los archivos completos que contienen alguna definición del símbolo |
+| `file_outline` | El archivo completo |
+| `rtk_grep` / `rtk_find` | La salida cruda de `grep -rn` / `find` sobre el mismo alcance |
+| `get_minified_diff` | El `git diff` nativo |
+| `bulk_read_files` | Su propia salida — devuelve los archivos enteros, **no ahorra** (0 %) |
+
+Si un baseline no se puede medir (o la llamada falla), se usa el coste real: 0 % de ahorro. La telemetría nunca infla el resultado.
+
+```bash
+rtk-index gain                    # resumen global
+rtk-index gain --project .        # solo este workspace
+rtk-index gain --since 7d         # 30m · 24h · 7d · 2w
+rtk-index gain --tool codebase_search
+rtk-index gain --history 30       # últimas 30 llamadas
+rtk-index gain --json             # para scripts
+rtk-index gain --reset            # borra el historial
+```
+
+```
+  rtk-index gain — ahorro de tokens
+
+  todo el histórico · rtk-mcp-server · 142 llamadas · desde hace 12d
+
+  Baseline (archivos completos / salida cruda)         1.2M
+  Real     (respuesta de rtk-index)                  148.0K
+  ──────────────────────────────────────────────────────────
+  AHORRO                                               1.1M   (88 %)
+
+  Por herramienta
+  HERRAMIENTA         LLAM.   BASELINE       REAL   AHORRO    MEDIA
+  codebase_search        61     820.1K      71.2K      91%     380ms
+  symbol_lookup          38     301.0K      22.4K      93%      42ms
+```
+
+Además, cada respuesta que la IA recibe lleva su propio pie: `[42 ms · ahorro ~91% (~1834 tokens)]`.
+
+**Dónde vive y cómo apagarlo.** Un JSONL append-only en `~/.local/share/rtk-index/telemetry.jsonl` (respeta `$XDG_DATA_HOME` y `$RTK_INDEX_DATA_DIR`), compartido entre proyectos y seguro con varios servidores MCP a la vez; rota a los 8 MB. Es 100 % local: no sale nada de tu máquina. Se desactiva con `RTK_INDEX_TELEMETRY=0` — eso también evita los procesos extra que miden el baseline de `rtk_grep`/`rtk_find`/`get_minified_diff`.
+
+> Los tokens son una **estimación conservadora** (1 token ≈ 4 caracteres), no la cuenta exacta del tokenizador del modelo. El porcentaje de ahorro sí es exacto: es invariante a esa constante.
 
 <details>
 <summary>Compilar desde el repo (alternativa)</summary>

@@ -74,6 +74,9 @@ pub fn run_init(root: &str) -> i32 {
     }
 
     eprintln!(
+        "\n  Tip: `rtk-index gain` muestra cuántos tokens te han ahorrado las herramientas."
+    );
+    eprintln!(
         "\n✓ Listo. Reinicia Claude Code en el proyecto.\n  \
          Con `alwaysLoad: true`, las herramientas rtk-index quedan SIEMPRE visibles\n  \
          (codebase_search · symbol_lookup · file_outline · rtk_grep · rtk_find),\n  \
@@ -123,6 +126,16 @@ pub fn run_check() -> i32 {
     let sdd = detect_sdd(".");
     if !sdd.is_empty() {
         eprintln!("  ✓ SDD detectado: {} (sus specs markdown se indexan)", sdd.join(" + "));
+    }
+
+    // Telemetría de ahorro de tokens.
+    let log = crate::telemetry::log_path();
+    if !crate::telemetry::enabled() {
+        eprintln!("  • telemetría desactivada (RTK_INDEX_TELEMETRY=0) — `rtk-index gain` no verá datos nuevos");
+    } else if log.exists() {
+        eprintln!("  ✓ telemetría activa → `rtk-index gain` ({})", log.display());
+    } else {
+        eprintln!("  • telemetría activa, aún sin datos — se llena al usar las herramientas (`rtk-index gain`)");
     }
 
     eprintln!(
