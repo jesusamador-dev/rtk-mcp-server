@@ -3,11 +3,12 @@
 //! entero. Usa el índice persistente y lo sincroniza incrementalmente antes.
 
 use crate::index;
-use serde_json::{json, Value};
+use crate::tools::{self, ToolResult};
+use serde_json::Value;
 
 const MAX_BODIES: usize = 6; // límite de cuerpos completos para acotar tokens
 
-pub fn execute(params: &Value) -> Result<Value, String> {
+pub fn execute(params: &Value) -> Result<ToolResult, String> {
     let arguments = params.get("arguments").unwrap_or(&Value::Null);
     let name = arguments
         .get("name")
@@ -30,13 +31,20 @@ pub fn execute(params: &Value) -> Result<Value, String> {
     );
 
     if rows.is_empty() {
-        return Ok(text(format!(
-            "Ningún símbolo llamado '{}' encontrado.\n{} ({} símbolos totales)",
+        return Ok(ToolResult::text_no_gain(
+            format!(
+                "Ningún símbolo llamado '{}' encontrado.\n{} ({} símbolos totales)",
+                name,
+                freshness,
+                ws.symbol_count()
+            ),
             name,
-            freshness,
-            ws.symbol_count()
-        )));
+        ));
     }
+
+    // Baseline: sin el índice habría que abrir enteros todos los archivos que
+    // contienen alguna definición del símbolo.
+    let baseline = tools::full_files_chars(rows.iter().map(|r| r.path.as_str()));
 
     let mut out = vec![format!(
         "{} coincidencia(s) para '{}'  {}",
@@ -69,9 +77,5 @@ pub fn execute(params: &Value) -> Result<Value, String> {
         ));
     }
 
-    Ok(text(out.join("\n")))
-}
-
-fn text(body: String) -> Value {
-    json!({ "content": [{ "type": "text", "text": body }] })
+    Ok(ToolResult::text(out.join("\n"), baseline, name))
 }

@@ -1,6 +1,8 @@
 mod cli;
 mod context;
+mod gain;
 mod index;
+mod telemetry;
 mod tools;
 
 use serde::{Deserialize, Serialize};
@@ -64,6 +66,9 @@ fn main() {
         Some("check") => {
             std::process::exit(cli::run_check());
         }
+        Some("gain") => {
+            std::process::exit(gain::run(&args[2..]));
+        }
         Some("serve") => {
             // --root <ruta>: raíz por defecto para las herramientas de índice.
             if let Some(i) = args.iter().position(|a| a == "--root") {
@@ -79,13 +84,17 @@ fn main() {
                  USO:\n  \
                  rtk-index init [ruta]        Indexa el workspace (1 vez) y configura .mcp.json\n  \
                  rtk-index check              Verifica el entorno (rtk, modelo, git)\n  \
+                 rtk-index gain [opciones]    Muestra el ahorro de tokens medido (--help)\n  \
                  rtk-index serve [--root R]   Corre el servidor MCP (lo lanza Claude Code)\n  \
                  rtk-index                    Igual que 'serve' (compatibilidad)"
             );
         }
         None => run_server(),
         Some(other) => {
-            eprintln!("Comando desconocido: '{}'. Usa: init | serve | --help", other);
+            eprintln!(
+                "Comando desconocido: '{}'. Usa: init | check | gain | serve | --help",
+                other
+            );
             std::process::exit(2);
         }
     }
@@ -113,6 +122,22 @@ fn run_server() {
             }
         }
         line.clear();
+    }
+}
+
+/// Pie de la respuesta: latencia y, cuando hay ahorro medible, cuánto se
+/// ahorró frente a leer los archivos completos / la salida cruda.
+fn footer(ms: u64, baseline_chars: usize, actual_chars: usize) -> String {
+    if baseline_chars > actual_chars {
+        let diff = baseline_chars - actual_chars;
+        format!(
+            "[{} ms · ahorro ~{}% (~{} tokens)]",
+            ms,
+            diff * 100 / baseline_chars,
+            telemetry::tokens(diff)
+        )
+    } else {
+        format!("[Execution time: {} ms]", ms)
     }
 }
 
@@ -241,21 +266,38 @@ fn handle_request(req: RpcRequest) {
                     _ => Err(format!("Unknown tool: {}", name))
                 };
                 
-                let elapsed_ms = start_time.elapsed().as_millis();
-                
+                let elapsed_ms = start_time.elapsed().as_millis() as u64;
+
                 match result {
-                    Ok(mut res) => {
+                    Ok(tr) => {
+                        let mut res = tr.value;
+                        let mut actual_chars = 0usize;
                         if let Some(content) = res.get_mut("content").and_then(|c| c.as_array_mut()) {
                             if let Some(first) = content.get_mut(0) {
                                 if let Some(text) = first.get("text").and_then(|t| t.as_str()) {
-                                    let new_text = format!("{}\n\n[Execution time: {} ms]", text, elapsed_ms);
+                                    let footer = footer(elapsed_ms, tr.baseline_chars, text.len());
+                                    let new_text = format!("{}\n\n{}", text, footer);
+                                    actual_chars = new_text.len();
                                     first["text"] = Value::String(new_text);
                                 }
                             }
                         }
+                        telemetry::record(
+                            name,
+                            true,
+                            elapsed_ms,
+                            tr.baseline_chars,
+                            actual_chars,
+                            tr.detail,
+                        );
                         send_response(id, res)
                     },
-                    Err(e) => send_error(id, -32603, &format!("{} (Execution time: {} ms)", e, elapsed_ms))
+                    Err(e) => {
+                        // Una llamada fallida no ahorra nada: baseline = coste real.
+                        let msg = format!("{} (Execution time: {} ms)", e, elapsed_ms);
+                        telemetry::record(name, false, elapsed_ms, msg.len(), msg.len(), Some(e));
+                        send_error(id, -32603, &msg)
+                    }
                 }
             }
         }

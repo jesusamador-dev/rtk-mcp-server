@@ -2,11 +2,12 @@
 //! sin pagar el costo de leer el archivo completo.
 
 use crate::index::chunker;
-use serde_json::{json, Value};
+use crate::tools::ToolResult;
+use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
-pub fn execute(params: &Value) -> Result<Value, String> {
+pub fn execute(params: &Value) -> Result<ToolResult, String> {
     let arguments = params.get("arguments").unwrap_or(&Value::Null);
     let path = arguments
         .get("path")
@@ -16,11 +17,18 @@ pub fn execute(params: &Value) -> Result<Value, String> {
     let content = fs::read_to_string(path).map_err(|e| format!("Could not read file: {}", e))?;
     let symbols = chunker::parse(Path::new(path), &content);
 
+    // Baseline: sin la herramienta habría que leer el archivo entero.
+    let baseline = content.len();
+
     if symbols.is_empty() {
-        return Ok(text(format!(
-            "No symbols found in {} (lenguaje no soportado o archivo sin símbolos).",
-            path
-        )));
+        return Ok(ToolResult::text(
+            format!(
+                "No symbols found in {} (lenguaje no soportado o archivo sin símbolos).",
+                path
+            ),
+            baseline,
+            path,
+        ));
     }
 
     let mut lines = vec![format!("Outline: {} ({} símbolos)", path, symbols.len())];
@@ -32,7 +40,7 @@ pub fn execute(params: &Value) -> Result<Value, String> {
             truncate(&s.signature, 100)
         ));
     }
-    Ok(text(lines.join("\n")))
+    Ok(ToolResult::text(lines.join("\n"), baseline, path))
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -42,8 +50,4 @@ fn truncate(s: &str, max: usize) -> String {
         let cut: String = s.chars().take(max).collect();
         format!("{}…", cut)
     }
-}
-
-fn text(body: String) -> Value {
-    json!({ "content": [{ "type": "text", "text": body }] })
 }

@@ -3,12 +3,13 @@
 //! y el código, en una sola llamada — reemplaza el baile grep → read → read.
 
 use crate::index;
-use serde_json::{json, Value};
+use crate::tools::{self, ToolResult};
+use serde_json::Value;
 
 const DEFAULT_K: usize = 8;
 const MAX_LINES_PER_HIT: usize = 60; // acota tokens por fragmento
 
-pub fn execute(params: &Value) -> Result<Value, String> {
+pub fn execute(params: &Value) -> Result<ToolResult, String> {
     let arguments = params.get("arguments").unwrap_or(&Value::Null);
     let query = arguments
         .get("query")
@@ -64,11 +65,15 @@ pub fn execute(params: &Value) -> Result<Value, String> {
     );
 
     if hits.is_empty() {
-        return Ok(text(format!(
-            "Sin coincidencias para: \"{}\"\n{}",
-            query, freshness
-        )));
+        return Ok(ToolResult::text_no_gain(
+            format!("Sin coincidencias para: \"{}\"\n{}", query, freshness),
+            query,
+        ));
     }
+
+    // Baseline: sin la herramienta, localizar esto habría implicado abrir
+    // enteros los archivos donde caen los resultados.
+    let baseline = tools::full_files_chars(hits.iter().map(|h| h.path.as_str()));
 
     let mut out = vec![format!(
         "{} resultado(s) para \"{}\"  {}",
@@ -104,9 +109,5 @@ pub fn execute(params: &Value) -> Result<Value, String> {
         }
     }
 
-    Ok(text(out.join("\n")))
-}
-
-fn text(body: String) -> Value {
-    json!({ "content": [{ "type": "text", "text": body }] })
+    Ok(ToolResult::text(out.join("\n"), baseline, query))
 }
