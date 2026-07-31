@@ -8,6 +8,10 @@ use serde_json::Value;
 
 const MAX_BODIES: usize = 6; // límite de cuerpos completos para acotar tokens
 
+/// Presupuesto de salida. `MAX_BODIES` por sí solo no acota nada: seis cuerpos
+/// grandes son 19 KB. Al agotarse, el resto se muestra como firma.
+const OUTPUT_BUDGET: usize = 5_000;
+
 pub fn execute(params: &Value) -> Result<ToolResult, String> {
     let arguments = params.get("arguments").unwrap_or(&Value::Null);
     let name = arguments
@@ -54,27 +58,35 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
         freshness
     )];
 
+    let mut used = 0usize;
+    let mut only_signature = 0usize;
     for (i, r) in rows.iter().enumerate() {
         out.push(String::new());
         out.push(format!(
             "── {} · {} · {}:L{}-{}",
             r.name, r.kind, r.path, r.start_line, r.end_line
         ));
-        if i < MAX_BODIES {
+        if i < MAX_BODIES && used < OUTPUT_BUDGET {
             match index::read_line_range(&r.path, r.start_line, r.end_line) {
-                Ok(code) => out.push(code.trim_end().to_string()),
+                Ok(code) => {
+                    let code = code.trim_end().to_string();
+                    used += code.len();
+                    out.push(code);
+                }
                 Err(e) => out.push(format!("[no se pudo leer el cuerpo: {}]", e)),
             }
         } else {
+            only_signature += 1;
             out.push(format!("   {}", r.signature));
         }
     }
 
-    if rows.len() > MAX_BODIES {
+    if only_signature > 0 {
         out.push(String::new());
         out.push(format!(
-            "[+{} coincidencias mostradas solo como firma; refina el nombre para ver su cuerpo]",
-            rows.len() - MAX_BODIES
+            "[+{} coincidencias solo como firma (presupuesto de salida); refina el nombre \
+             o usa el ancla path:líneas para ver un cuerpo concreto]",
+            only_signature
         ));
     }
 

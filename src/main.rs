@@ -268,12 +268,13 @@ fn handle_request(req: RpcRequest) {
                         },
                         {
                             "name": "rtk_grep",
-                            "description": "grep comprimido vía rtk. Devuelve líneas coincidentes con su ancla path:línea. Para localizar por concepto usa codebase_search; esto es para patrones exactos.",
+                            "description": "Busca un patrón (regex) respetando .gitignore, con el mismo alcance que rtk_find y el índice: excluye .git, .rtk-index y el histórico de OpenSpec. Devuelve las líneas con su ancla path:línea, o —si hay demasiadas— el conteo por archivo. Para patrones exactos; para buscar por concepto, codebase_search.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "query": { "type": "string", "description": "Término de búsqueda o regex" },
-                                    "path": { "type": "string", "description": "Archivo o directorio donde buscar (por defecto '.')" }
+                                    "path": { "type": "string", "description": "Archivo o directorio donde buscar (por defecto '.')" },
+                                    "count": { "type": "boolean", "description": "Solo el conteo por archivo, como `grep -c`. Para '¿cuántos quedan?' es mucho más barato que listar las líneas." }
                                 },
                                 "required": ["query"]
                             }

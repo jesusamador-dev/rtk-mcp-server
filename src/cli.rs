@@ -89,7 +89,6 @@ pub fn run_init(root: &str) -> i32 {
 /// `check`: verifica el entorno antes de trabajar (estilo doctor).
 pub fn run_check() -> i32 {
     eprintln!("rtk-index check — verificando entorno\n");
-    let mut warnings = 0;
 
     // Binario en uso.
     if let Ok(exe) = std::env::current_exe() {
@@ -100,12 +99,11 @@ pub fn run_check() -> i32 {
         );
     }
 
-    // rtk (para rtk_grep / rtk_find).
+    // rtk: ya solo lo usa get_minified_diff; grep y find son nativos.
     if on_path("rtk") {
-        eprintln!("  ✓ rtk disponible (habilita rtk_grep / rtk_find)");
+        eprintln!("  ✓ rtk disponible (comprime get_minified_diff)");
     } else {
-        warnings += 1;
-        eprintln!("  ⚠ rtk no está en el PATH — rtk_grep/rtk_find no funcionarán (el índice sí)");
+        eprintln!("  • rtk no está en el PATH — get_minified_diff usará `git diff` nativo");
     }
 
     // Modelo de embeddings cacheado.
@@ -142,14 +140,7 @@ pub fn run_check() -> i32 {
         eprintln!("  • telemetría activa, aún sin datos — se llena al usar las herramientas (`rtk-index gain`)");
     }
 
-    eprintln!(
-        "\n{}",
-        if warnings == 0 {
-            "Todo listo. Ejecuta `rtk-index init .` en tu proyecto.".to_string()
-        } else {
-            format!("{} advertencia(s). Puedes continuar; revisa lo marcado con ⚠.", warnings)
-        }
-    );
+    eprintln!("\nTodo listo. Ejecuta `rtk-index init .` en tu proyecto.");
     0
 }
 

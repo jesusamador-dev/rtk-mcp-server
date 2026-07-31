@@ -9,6 +9,11 @@ use serde_json::Value;
 const DEFAULT_K: usize = 8;
 const MAX_LINES_PER_HIT: usize = 60; // acota tokens por fragmento
 
+/// Presupuesto de salida para el conjunto: con k=25 y 60 líneas por fragmento,
+/// el tope por fragmento no impide una respuesta enorme. Agotado, los últimos
+/// resultados se listan solo con su ancla.
+const OUTPUT_BUDGET: usize = 8_000;
+
 pub fn execute(params: &Value) -> Result<ToolResult, String> {
     let arguments = params.get("arguments").unwrap_or(&Value::Null);
     let query = arguments
@@ -82,6 +87,8 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
         freshness
     )];
 
+    let mut used = 0usize;
+    let mut anchors_only = 0usize;
     for (i, h) in hits.iter().enumerate() {
         out.push(String::new());
         out.push(format!(
@@ -93,10 +100,16 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
             h.start_line,
             h.end_line
         ));
+        if used >= OUTPUT_BUDGET {
+            anchors_only += 1;
+            continue; // ancla ya impresa arriba; el cuerpo no cabe
+        }
         let capped_end = (h.start_line + MAX_LINES_PER_HIT).min(h.end_line);
         match index::read_line_range(&h.path, h.start_line, capped_end) {
             Ok(code) => {
-                out.push(code.trim_end().to_string());
+                let code = code.trim_end().to_string();
+                used += code.len();
+                out.push(code);
                 if capped_end < h.end_line {
                     out.push(format!(
                         "   … (+{} líneas; usa symbol_lookup(\"{}\") para el cuerpo completo)",
@@ -107,6 +120,15 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
             }
             Err(e) => out.push(format!("[no se pudo leer: {}]", e)),
         }
+    }
+
+    if anchors_only > 0 {
+        out.push(String::new());
+        out.push(format!(
+            "[{} resultado(s) más, solo con su ancla (presupuesto de salida): pídelos con \
+             symbol_lookup o acota la consulta]",
+            anchors_only
+        ));
     }
 
     Ok(ToolResult::text(
