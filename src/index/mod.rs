@@ -383,6 +383,15 @@ impl Workspace {
         })
     }
 
+    /// Deja todo listo para responder rápido: modelo cargado y vectores en RAM.
+    /// Se llama en el primer rato ocioso, así ni la primera búsqueda paga los
+    /// ~535 ms del modelo ni la carga inicial de vectores.
+    pub fn preheat(&mut self) -> Result<(), String> {
+        let _t = crate::trace::span("preheat (modelo + vectores)");
+        self.ensure_embedder()?;
+        self.load_vec_cache()
+    }
+
     /// Carga los vectores a memoria si aún no están.
     fn load_vec_cache(&mut self) -> Result<(), String> {
         if self.vec_cache.is_some() {

@@ -179,7 +179,21 @@ fn warm_step() -> bool {
         ws.ensure_vectors_idle()
     });
     match outcome {
-        Ok(stats) => stats.remaining > 0,
+        Ok(stats) if stats.remaining > 0 => true,
+        Ok(_) => {
+            // Sin backlog: aprovechar el ocio para dejar el modelo cargado y
+            // los vectores en RAM, una sola vez. Después ya no hay nada que
+            // hacer y el bucle se duerme esperando peticiones.
+            static PREHEATED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if PREHEATED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                return false;
+            }
+            if let Err(e) = index::with_workspace(&root, |ws| ws.preheat()) {
+                eprintln!("[warm-up] precalentado no disponible: {}", e);
+            }
+            false
+        }
         Err(e) => {
             // Sin modelo o sin índice: no insistir en cada vuelta del bucle.
             eprintln!("[warm-up] desactivado: {}", e);

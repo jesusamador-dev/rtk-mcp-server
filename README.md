@@ -210,6 +210,7 @@ Cinco cambios lo explican:
 3. **Vectores en RAM.** Antes se deserializaban ~30 MB desde SQLite en cada búsqueda. Ahora se cargan una vez y se actualizan en sitio cuando se re-vectoriza un archivo.
 4. **Warm-up en tiempo ocioso.** Un hilo lee stdin y el principal vectoriza el backlog *entre* peticiones. Ninguna búsqueda paga la deuda de vectorización de otro archivo; cuando llega tu consulta, el trabajo ya está hecho.
 5. **Presupuesto por contexto.** Dentro de una búsqueda se embeben como mucho 32 símbolos (lo que acabas de editar); el resto es trabajo de fondo.
+6. **Precalentado.** En el primer rato ocioso —normalmente antes de que pidas nada— se carga el modelo y los vectores a RAM, así ni la primera búsqueda de la sesión paga esos ~535 ms.
 
 Si el índice aún tiene backlog, una búsqueda cuesta ~350 ms en vez de ~40; el warm-up ocioso lo agota solo, y `rtk-index init .` lo hace de golpe.
 
