@@ -10,6 +10,8 @@ mod update;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{self, BufRead};
+use std::sync::mpsc;
+use std::thread;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcRequest {
@@ -112,26 +114,78 @@ fn main() {
 
 fn run_server() {
     eprintln!("RTK MCP Server running on stdio");
-    let stdin = io::stdin();
-    let mut handle = stdin.lock();
-    let mut line = String::new();
 
-    while handle.read_line(&mut line).unwrap_or(0) > 0 {
-        if line.trim().is_empty() {
-            line.clear();
-            continue;
-        }
-
-        let req: Result<RpcRequest, _> = serde_json::from_str(&line);
-        match req {
-            Ok(req) => {
-                handle_request(req);
-            }
-            Err(e) => {
-                eprintln!("Failed to parse request: {} - Line: {}", e, line.trim());
+    // Un hilo lee stdin y encola; el principal atiende y, cuando la cola está
+    // vacía, aprovecha el rato ocioso para calentar el índice semántico. Así
+    // ninguna búsqueda paga la vectorización del backlog: para cuando llega la
+    // consulta, el trabajo ya está hecho.
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        let mut handle = stdin.lock();
+        let mut line = String::new();
+        while handle.read_line(&mut line).unwrap_or(0) > 0 {
+            if tx.send(std::mem::take(&mut line)).is_err() {
+                return;
             }
         }
-        line.clear();
+    });
+
+    loop {
+        match rx.try_recv() {
+            Ok(line) => dispatch(&line),
+            Err(mpsc::TryRecvError::Empty) => {
+                // Nada que atender: un paso de warm-up. Si no queda backlog,
+                // dormimos en el canal hasta la próxima petición.
+                if !warm_step() {
+                    match rx.recv() {
+                        Ok(line) => dispatch(&line),
+                        Err(_) => break,
+                    }
+                }
+            }
+            Err(mpsc::TryRecvError::Disconnected) => break,
+        }
+    }
+}
+
+fn dispatch(line: &str) {
+    if line.trim().is_empty() {
+        return;
+    }
+    match serde_json::from_str::<RpcRequest>(line) {
+        Ok(req) => handle_request(req),
+        Err(e) => eprintln!("Failed to parse request: {} - Line: {}", e, line.trim()),
+    }
+}
+
+/// Un paso de calentamiento en tiempo ocioso. Devuelve `true` si quedó backlog
+/// (hay más que hacer), `false` si el índice ya está completo o no disponible.
+fn warm_step() -> bool {
+    static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if FAILED.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    // El sync solo de vez en cuando: repetirlo en cada paso del warm-up sería
+    // recorrer el árbol una y otra vez sin que nada haya cambiado. Las
+    // peticiones reales lo hacen siempre, así que la frescura no depende de esto.
+    static STEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let step = STEP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = context::default_root();
+    let outcome = index::with_workspace(&root, |ws| {
+        if step % 50 == 0 {
+            ws.sync()?;
+        }
+        ws.ensure_vectors_idle()
+    });
+    match outcome {
+        Ok(stats) => stats.remaining > 0,
+        Err(e) => {
+            // Sin modelo o sin índice: no insistir en cada vuelta del bucle.
+            eprintln!("[warm-up] desactivado: {}", e);
+            FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+            false
+        }
     }
 }
 

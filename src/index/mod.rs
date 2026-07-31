@@ -22,15 +22,27 @@ use search::SearchIndex;
 // sube a ~100 símb/s (el costo de inferencia crece fuerte con la longitud).
 const EMBED_TEXT_MAX_CHARS: usize = 256;
 
-/// Tope duro de símbolos a embeber por llamada de búsqueda.
+/// Tope de símbolos por pasada de `init` (sin límite de tiempo).
 const MAX_EMBED_PER_CALL: usize = 800;
+
+/// Tope dentro de una BÚSQUEDA. Muy bajo a propósito: cubre lo que acabas de
+/// editar, no el backlog — de ese se encarga el warm-up ocioso.
+const SEARCH_EMBED_MAX: usize = 32;
+
+/// Tope por paso de warm-up ocioso.
+const IDLE_EMBED_MAX: usize = 64;
 
 /// Presupuesto de TIEMPO para calentar el índice dentro de una búsqueda. El
 /// usuario espera su resultado, no el warm-up: sobre un repo con decenas de
 /// miles de símbolos pendientes, el tope por conteo hacía que cada búsqueda
 /// pagara ~8 s de vectorización ajena. Con deadline, la búsqueda responde y el
 /// backlog se calienta poco a poco (o de golpe con `rtk-index init`).
-const WARMUP_BUDGET_MS: u64 = 1_200;
+const WARMUP_BUDGET_MS: u64 = 300;
+
+/// Presupuesto por paso de calentamiento ocioso (entre peticiones MCP). Corto
+/// a propósito: si llega una petición a medias, solo espera lo que reste del
+/// lote en curso.
+const IDLE_BUDGET_MS: u64 = 400;
 
 /// Tamaño de lote de embebido: acota la granularidad con la que se comprueba
 /// el deadline sin penalizar el throughput del modelo.
@@ -79,6 +91,10 @@ pub struct Workspace {
     conn: Connection,
     search: SearchIndex,
     embedder: Option<Embedder>,
+    /// Vectores en memoria. Deserializarlos desde SQLite en cada búsqueda son
+    /// ~30 MB y cientos de ms sobre un repo grande; aquí se cargan una vez y se
+    /// actualizan en sitio cuando se re-vectoriza un archivo.
+    vec_cache: Option<Vec<(db::VecRow, Vec<f32>)>>,
 }
 
 thread_local! {
@@ -116,6 +132,7 @@ impl Workspace {
             conn,
             search,
             embedder: None,
+            vec_cache: None,
         })
     }
 
@@ -126,49 +143,37 @@ impl Workspace {
         let _t = crate::trace::span("sync (walk+hash)");
         let force_all = self.search.num_docs() == 0;
         let writer = self.search.writer()?;
+        // Todo el estado del índice en una consulta: preguntar archivo por
+        // archivo costaba ~30 µs × miles de archivos, el grueso del `sync`.
+        let stored_all = if force_all {
+            std::collections::HashMap::new()
+        } else {
+            db::all_file_meta(&self.conn)?
+        };
 
         let mut seen: HashSet<String> = HashSet::new();
         let mut reindexed = 0;
         let mut total = 0;
         let mut dirty = false;
 
-        for result in WalkBuilder::new(&self.root).hidden(false).build() {
-            let entry = match result {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if !entry.file_type().map_or(false, |ft| ft.is_file()) {
-                continue;
-            }
-            let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !chunker::is_supported(ext) {
-                continue;
-            }
-            if path.components().any(|c| c.as_os_str() == ".rtk-index") {
-                continue;
-            }
-            // OpenSpec: el histórico archivado es ruido (cientos de miles de tokens).
-            if path.to_string_lossy().contains("openspec/changes/archive/") {
-                continue;
-            }
+        // Descubrimiento en paralelo: recorrer y hacer `stat` a miles de
+        // archivos en un hilo era el grueso del `sync`. Solo se recolecta aquí;
+        // SQLite y tantivy se tocan después, en serie.
+        let candidates = walk_files(&self.root);
 
+        for (path_buf, mtime) in candidates {
+            let path = path_buf.as_path();
             let path_str = path.to_string_lossy().to_string();
             seen.insert(path_str.clone());
             total += 1;
 
-            let mtime = file_mtime(path);
-            let stored = if force_all {
-                None
-            } else {
-                db::stored_meta(&self.conn, &path_str)
-            };
+            let stored = stored_all.get(&path_str);
 
             // Atajo por mtime: un `stat` en vez de leer y hashear el archivo.
             // Sobre un repo grande esto es la diferencia entre segundos y
             // milisegundos por llamada. Si el mtime cambió sí leemos, y el
             // hash decide (un `touch` o un checkout no re-indexan de balde).
-            if let Some((_, stored_mtime)) = &stored {
+            if let Some((_, stored_mtime)) = stored {
                 if *stored_mtime == mtime {
                     continue;
                 }
@@ -180,7 +185,7 @@ impl Workspace {
             };
             let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-            if let Some((stored_hash, _)) = &stored {
+            if let Some((stored_hash, _)) = stored {
                 if *stored_hash == hash {
                     // Mismo contenido con otro mtime: refresca solo el mtime.
                     db::touch_mtime(&self.conn, &path_str, mtime);
@@ -264,31 +269,44 @@ impl Workspace {
         Ok(self.embedder.as_ref().unwrap())
     }
 
-    /// Calienta el índice semántico durante una BÚSQUEDA: presupuesto de tiempo
-    /// corto, porque el usuario está esperando su resultado, no el warm-up.
+    /// Calienta el índice semántico durante una BÚSQUEDA. Presupuesto mínimo:
+    /// el grueso del trabajo lo hace `ensure_vectors_idle` entre peticiones, así
+    /// que aquí solo se cubre lo recién editado.
     pub fn ensure_vectors(&mut self) -> Result<VectorStats, String> {
-        self.ensure_vectors_budget(Some(Duration::from_millis(WARMUP_BUDGET_MS)))
+        self.ensure_vectors_budget(SEARCH_EMBED_MAX, Some(Duration::from_millis(WARMUP_BUDGET_MS)))
+    }
+
+    /// Calienta en tiempo ocioso, entre peticiones MCP. El lote es corto para
+    /// que una petición que llegue a media vectorización no espere apenas.
+    pub fn ensure_vectors_idle(&mut self) -> Result<VectorStats, String> {
+        self.ensure_vectors_budget(IDLE_EMBED_MAX, Some(Duration::from_millis(IDLE_BUDGET_MS)))
     }
 
     /// Calienta sin límite de tiempo: para `init`, que sí viene a terminar el
     /// trabajo y muestra progreso mientras tanto.
     pub fn ensure_vectors_full(&mut self) -> Result<VectorStats, String> {
-        self.ensure_vectors_budget(None)
+        self.ensure_vectors_budget(MAX_EMBED_PER_CALL, None)
     }
 
     /// Vectoriza los símbolos de archivos cuyo hash cambió, por lotes, hasta
     /// agotar el presupuesto (tope de símbolos y, opcionalmente, de tiempo).
     /// Devuelve cuántos quedan pendientes para las siguientes llamadas.
-    fn ensure_vectors_budget(&mut self, deadline: Option<Duration>) -> Result<VectorStats, String> {
+    fn ensure_vectors_budget(
+        &mut self,
+        max_symbols: usize,
+        deadline: Option<Duration>,
+    ) -> Result<VectorStats, String> {
         let _t = crate::trace::span("ensure_vectors");
         let t0 = Instant::now();
 
         // Purga primero los vectores de archivos ya borrados.
         let files = db::all_files(&self.conn)?;
         let present: HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-        for vp in db::all_vec_paths(&self.conn)? {
+        let vec_meta = db::all_vec_meta(&self.conn)?;
+        for vp in vec_meta.keys() {
             if !present.contains(vp.as_str()) {
-                db::remove_vectors(&self.conn, &vp)?;
+                db::remove_vectors(&self.conn, vp)?;
+                self.vec_cache = None;
             }
         }
 
@@ -299,7 +317,7 @@ impl Workspace {
         let mut spent = false; // presupuesto agotado: solo contamos backlog
 
         for (path, hash) in &files {
-            if db::vec_meta_hash(&self.conn, path).as_deref() == Some(hash.as_str()) {
+            if vec_meta.get(path).map(String::as_str) == Some(hash.as_str()) {
                 continue;
             }
             let symbols = db::symbols_of(&self.conn, path)?;
@@ -340,7 +358,7 @@ impl Workspace {
             // Lote completo: embeber ya, y decidir si queda presupuesto. Cortar
             // por lotes (y no por archivo) permite respetar un deadline sin
             // dejar ningún archivo a medio vectorizar.
-            if texts.len() >= EMBED_BATCH {
+            if texts.len() >= EMBED_BATCH.min(max_symbols) {
                 let t_batch = Instant::now();
                 embedded_now += self.flush_batch(&batch, std::mem::take(&mut texts))?;
                 batch.clear();
@@ -349,7 +367,7 @@ impl Workspace {
                 // "ya me pasé" siempre lo excedía en un lote entero.
                 let over_time = deadline
                     .map_or(false, |d| t0.elapsed() + t_batch.elapsed() > d);
-                if over_time || embedded_now >= MAX_EMBED_PER_CALL {
+                if over_time || embedded_now >= max_symbols {
                     spent = true;
                 }
             }
@@ -363,6 +381,21 @@ impl Workspace {
             embedded_now,
             remaining,
         })
+    }
+
+    /// Carga los vectores a memoria si aún no están.
+    fn load_vec_cache(&mut self) -> Result<(), String> {
+        if self.vec_cache.is_some() {
+            return Ok(());
+        }
+        let _t = crate::trace::span("  cargar vectores a RAM");
+        let rows = db::load_vectors(&self.conn)?;
+        self.vec_cache = Some(
+            rows.into_iter()
+                .map(|(m, blob)| (m, embed::from_blob(&blob)))
+                .collect(),
+        );
+        Ok(())
     }
 
     /// Embebe un lote de archivos completos y persiste sus vectores. Devuelve
@@ -399,6 +432,29 @@ impl Workspace {
                 .collect();
             db::replace_vectors(&mut self.conn, &p.path, &p.hash, &rows)?;
         }
+
+        // Mantener el caché al día sin recargarlo entero: fuera los vectores
+        // viejos de estos archivos, dentro los recién calculados.
+        if let Some(cache) = self.vec_cache.as_mut() {
+            let touched: HashSet<&str> = batch.iter().map(|p| p.path.as_str()).collect();
+            cache.retain(|(m, _)| !touched.contains(m.path.as_str()));
+            let mut offset = 0;
+            for p in batch {
+                for s in &p.symbols {
+                    cache.push((
+                        db::VecRow {
+                            path: p.path.clone(),
+                            name: s.name.clone(),
+                            kind: s.kind.clone(),
+                            start_line: s.start_line,
+                            end_line: s.end_line,
+                        },
+                        vecs[offset].clone(),
+                    ));
+                    offset += 1;
+                }
+            }
+        }
         Ok(n_texts)
     }
 
@@ -411,29 +467,26 @@ impl Workspace {
             self.embedder.as_ref().unwrap().embed_query(query)?
         };
 
+        self.load_vec_cache()?;
         let _t2 = crate::trace::span("  coseno sobre vectores");
-        let vectors = db::load_vectors(&self.conn)?;
-        let mut scored: Vec<(f32, Candidate)> = vectors
-            .into_iter()
-            .map(|(m, blob)| {
-                let v = embed::from_blob(&blob);
-                let sim = embed::cosine(&qv, &v);
-                (
-                    sim,
-                    Candidate {
-                        path: m.path,
-                        name: m.name,
-                        kind: m.kind,
-                        start_line: m.start_line,
-                        end_line: m.end_line,
-                    },
-                )
-            })
+        let vectors = self.vec_cache.as_ref().expect("caché recién cargada");
+        let mut scored: Vec<(f32, &db::VecRow)> = vectors
+            .iter()
+            .map(|(m, v)| (embed::cosine(&qv, v), m))
             .collect();
 
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(n);
-        Ok(scored.into_iter().map(|(_, c)| c).collect())
+        Ok(scored
+            .into_iter()
+            .map(|(_, m)| Candidate {
+                path: m.path.clone(),
+                name: m.name.clone(),
+                kind: m.kind.clone(),
+                start_line: m.start_line,
+                end_line: m.end_line,
+            })
+            .collect())
     }
 
     pub fn symbol_count(&self) -> i64 {
@@ -467,21 +520,49 @@ pub fn rrf(lists: &[Vec<Candidate>], k: usize) -> Vec<Candidate> {
         .collect()
 }
 
+/// Recorre el árbol en paralelo y devuelve los archivos indexables con su
+/// mtime. Respeta `.gitignore` (vía `ignore`) y salta el propio índice y el
+/// histórico archivado de OpenSpec.
+fn walk_files(root: &str) -> Vec<(PathBuf, i64)> {
+    let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, i64)>();
+    WalkBuilder::new(root)
+        .hidden(false)
+        .build_parallel()
+        .run(|| {
+            let tx = tx.clone();
+            Box::new(move |result| {
+                if let Ok(entry) = result {
+                    if entry.file_type().map_or(false, |ft| ft.is_file()) {
+                        let path = entry.path();
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        let skip = !chunker::is_supported(ext)
+                            || path.components().any(|c| c.as_os_str() == ".rtk-index")
+                            || path.to_string_lossy().contains("openspec/changes/archive/");
+                        if !skip {
+                            let mtime = entry
+                                .metadata()
+                                .ok()
+                                .and_then(|m| m.modified().ok())
+                                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs() as i64)
+                                .unwrap_or(0);
+                            let _ = tx.send((entry.into_path(), mtime));
+                        }
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
+    drop(tx); // cierra el canal: sin esto, `rx` esperaría para siempre
+    rx.into_iter().collect()
+}
+
 fn slice_lines(lines: &[&str], start: usize, end: usize) -> String {
     if start == 0 || start > lines.len() {
         return String::new();
     }
     let end = end.min(lines.len());
     lines[start - 1..end].join("\n")
-}
-
-fn file_mtime(path: &Path) -> i64 {
-    fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// Lee un rango de líneas [start, end] (1-indexed, inclusivo) con números de línea.

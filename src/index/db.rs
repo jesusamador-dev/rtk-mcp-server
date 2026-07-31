@@ -3,6 +3,7 @@
 //! Clave por hash blake3 del contenido de cada archivo → sincronización
 //! incremental estilo merkle: solo se re-indexa lo que cambió.
 
+use std::collections::HashMap;
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -60,7 +61,6 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
-/// hash+mtime almacenados para un archivo (para decidir si re-indexar).
 /// Refresca solo el mtime: el contenido no cambió (mismo hash), así que no hay
 /// que re-parsear ni re-indexar; basta con no volver a leerlo la próxima vez.
 pub fn touch_mtime(conn: &Connection, path: &str, mtime: i64) {
@@ -70,21 +70,40 @@ pub fn touch_mtime(conn: &Connection, path: &str, mtime: i64) {
     );
 }
 
-pub fn stored_meta(conn: &Connection, path: &str) -> Option<(String, i64)> {
-    conn.query_row(
-        "SELECT hash, mtime FROM files WHERE path = ?1",
-        params![path],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-    )
-    .ok()
-}
-
 pub fn all_paths(conn: &Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare("SELECT path FROM files")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// path → (hash, mtime) de TODOS los archivos, en una sola consulta. Preguntar
+/// archivo por archivo costaba ~30 µs × miles de archivos en cada `sync`.
+pub fn all_file_meta(conn: &Connection) -> Result<HashMap<String, (String, i64)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT path, hash, mtime FROM files")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, String>(1)?, r.get::<_, i64>(2)?),
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// path → hash de los vectores ya calculados, en una sola consulta.
+pub fn all_vec_meta(conn: &Connection) -> Result<HashMap<String, String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT path, hash FROM vec_meta")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -214,25 +233,6 @@ pub struct VecRow {
     pub kind: String,
     pub start_line: usize,
     pub end_line: usize,
-}
-
-pub fn vec_meta_hash(conn: &Connection, path: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT hash FROM vec_meta WHERE path = ?1",
-        params![path],
-        |r| r.get::<_, String>(0),
-    )
-    .ok()
-}
-
-pub fn all_vec_paths(conn: &Connection) -> Result<Vec<String>, String> {
-    let mut stmt = conn
-        .prepare("SELECT path FROM vec_meta")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 /// Reemplaza los vectores de un archivo y su hash, en una transacción.

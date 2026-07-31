@@ -191,19 +191,27 @@ claude mcp add rtk-index -- /ruta/absoluta/a/rtk-index serve --root /ruta/a/tu/p
 
 ## ⚡ Rendimiento: qué cuesta una llamada
 
-Medido sobre un monorepo de 3679 archivos con `RTK_INDEX_TRACE=1` (las trazas van a stderr, no cuestan tokens):
+Medido en **release** sobre un monorepo de 3679 archivos, con `RTK_INDEX_TRACE=1` (las trazas van a stderr; no cuestan tokens):
 
 | Fase | Antes | Ahora |
 | :--- | ---: | ---: |
-| `sync` (detectar cambios) | 8388 ms | **150 ms** |
-| carga del modelo ONNX | 1360 ms **por llamada** | 1360 ms **una vez por sesión** |
-| warm-up del índice semántico | 8-11 s por búsqueda | ≤ 1,2 s (presupuesto de tiempo) |
-| búsqueda real (BM25 + coseno) | 17-58 ms | 17-58 ms |
-| **total, 2ª búsqueda en adelante** | **~9 s** | **~1,1 s** |
+| `sync` (detectar cambios) | 8388 ms | **26 ms** |
+| carga del modelo ONNX | 535 ms **por llamada** | 535 ms **una vez por sesión** |
+| BM25 | 2 ms | 0 ms |
+| embed de la consulta | 3 ms | 2 ms |
+| cargar vectores + coseno | 41 ms **por llamada** | 0 ms (28 ms una vez) |
+| warm-up del índice semántico | 8-11 s **dentro de la búsqueda** | 0 (ocurre en tiempo ocioso) |
+| **total, búsqueda en caliente** | **~9 s** | **~30-50 ms** |
 
-Tres cambios lo explican: el workspace queda **cacheado por proceso** (antes cada llamada reabría el índice y recargaba el modelo), `sync` usa un **atajo por `mtime`** en vez de leer y hashear todo el repo, y el calentamiento del índice semántico tiene **presupuesto de tiempo** — antes cada búsqueda pagaba la vectorización de hasta 800 símbolos ajenos a la consulta.
+Cinco cambios lo explican:
 
-> Si ves `índice semántico calentando (N pendientes)` en las respuestas, corre `rtk-index init .` una vez: vectoriza todo el backlog de golpe en lugar de a cachitos.
+1. **Workspace cacheado por proceso.** Antes cada llamada reabría el índice y recargaba el modelo ONNX entero.
+2. **`sync` con una sola consulta y walk paralelo.** Antes preguntaba a SQLite archivo por archivo (~30 µs × miles) y leía y hasheaba todo el repo; ahora carga el estado de una vez, recorre el árbol en paralelo y compara `mtime` — solo lee lo que cambió.
+3. **Vectores en RAM.** Antes se deserializaban ~30 MB desde SQLite en cada búsqueda. Ahora se cargan una vez y se actualizan en sitio cuando se re-vectoriza un archivo.
+4. **Warm-up en tiempo ocioso.** Un hilo lee stdin y el principal vectoriza el backlog *entre* peticiones. Ninguna búsqueda paga la deuda de vectorización de otro archivo; cuando llega tu consulta, el trabajo ya está hecho.
+5. **Presupuesto por contexto.** Dentro de una búsqueda se embeben como mucho 32 símbolos (lo que acabas de editar); el resto es trabajo de fondo.
+
+Si el índice aún tiene backlog, una búsqueda cuesta ~350 ms en vez de ~40; el warm-up ocioso lo agota solo, y `rtk-index init .` lo hace de golpe.
 
 ---
 
