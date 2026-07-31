@@ -3,6 +3,8 @@ mod context;
 mod gain;
 mod index;
 mod telemetry;
+#[cfg(test)]
+mod testutil;
 mod tools;
 mod trace;
 mod update;
@@ -414,5 +416,31 @@ fn handle_request(req: RpcRequest) {
                 send_error(id, -32601, &format!("Method not found: {}", method));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el_pie_pone_el_coste_primero_y_nombra_al_rival() {
+        let f = footer(42, 4000, 400, "leer el archivo completo");
+        assert!(f.starts_with("[42 ms · ~100 tokens"), "el coste real va primero: {}", f);
+        assert!(f.contains("−90% vs leer el archivo completo"), "y el rival con nombre: {}", f);
+    }
+
+    /// Sin ahorro no se inventa un porcentaje; solo se informa del coste.
+    #[test]
+    fn el_pie_calla_el_ahorro_cuando_no_lo_hay() {
+        let igual = footer(5, 400, 400, "grep -rn");
+        assert_eq!(igual, "[5 ms · ~100 tokens]");
+        let peor = footer(5, 100, 400, "grep -rn");
+        assert!(!peor.contains('%'), "una respuesta más cara no presume: {}", peor);
+    }
+
+    #[test]
+    fn el_pie_no_divide_por_cero_con_baseline_vacio() {
+        assert_eq!(footer(1, 0, 0, "x"), "[1 ms · ~0 tokens]");
     }
 }

@@ -192,3 +192,57 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{}…", cut)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn los_tokens_se_estiman_al_alza() {
+        assert_eq!(tokens(0), 0);
+        assert_eq!(tokens(1), 1, "nunca redondea a cero un texto no vacío");
+        assert_eq!(tokens(4), 1);
+        assert_eq!(tokens(5), 2);
+        assert_eq!(tokens(4000), 1000);
+    }
+
+    #[test]
+    fn el_ahorro_puede_ser_negativo_y_se_conserva_el_signo() {
+        let caro = Event {
+            ts: 0, tool: "rtk_grep".into(), project: "/p".into(), ok: true, ms: 1,
+            baseline_tokens: 100, actual_tokens: 150, vs: "grep -rn".into(), detail: None,
+        };
+        assert_eq!(caro.saved(), -50, "una respuesta más cara no se disfraza de ahorro");
+    }
+
+    #[test]
+    fn el_evento_sobrevive_al_viaje_por_jsonl() {
+        let ev = Event {
+            ts: 1_700_000_000, tool: "codebase_search".into(), project: "/repo".into(),
+            ok: true, ms: 42, baseline_tokens: 900, actual_tokens: 100,
+            vs: "leer el archivo completo".into(), detail: Some("consulta".into()),
+        };
+        let linea = serde_json::to_string(&ev).unwrap();
+        assert!(!linea.contains('\n'), "una sola línea por evento");
+        let vuelta: Event = serde_json::from_str(&linea).unwrap();
+        assert_eq!(vuelta.saved(), 800);
+        assert_eq!(vuelta.vs, "leer el archivo completo");
+    }
+
+    /// Los logs escritos antes de que existiera el campo `vs` deben seguir leyéndose.
+    #[test]
+    fn tolera_eventos_de_versiones_anteriores() {
+        let viejo = r#"{"ts":1,"tool":"rtk_find","project":"/p","ok":true,"ms":3,"baseline_tokens":10,"actual_tokens":4}"#;
+        let ev: Event = serde_json::from_str(viejo).unwrap();
+        assert_eq!(ev.saved(), 6);
+        assert_eq!(ev.vs, "");
+    }
+
+    #[test]
+    fn el_detalle_se_recorta_y_no_rompe_la_linea() {
+        let largo = format!("línea uno\nlínea dos {}", "x".repeat(200));
+        let t = truncate(&largo, 80);
+        assert!(!t.contains('\n'));
+        assert!(t.chars().count() <= 81, "80 caracteres más la elipsis");
+    }
+}

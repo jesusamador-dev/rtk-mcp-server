@@ -57,3 +57,49 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{}…", cut)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{args, text_of, TmpRepo};
+    use serde_json::json;
+
+    #[test]
+    fn devuelve_firmas_sin_cuerpos() {
+        let repo = TmpRepo::new("outline");
+        let cuerpo: String = (0..60).map(|i| format!("    let secreto_{} = {};\n", i, i)).collect();
+        let fuente: String = (0..8)
+            .map(|i| format!("pub fn funcion_{}() {{\n{}}}\n\n", i, cuerpo))
+            .collect();
+        repo.write("a.rs", &fuente);
+
+        let r = execute(&args(json!({"path": repo.path("a.rs")}))).unwrap();
+        let out = text_of(&r);
+        assert!(out.contains("funcion_0") && out.contains("funcion_7"));
+        assert!(!out.contains("secreto_"), "el cuerpo no viaja");
+        assert_eq!(r.baseline_chars, fuente.len(), "el rival es el archivo entero");
+        assert!(out.len() * 10 < r.baseline_chars, "y ahorra de sobra: {} vs {}", out.len(), r.baseline_chars);
+    }
+
+    /// En un archivo diminuto el outline no ahorra nada, y así debe reportarse:
+    /// la métrica no puede inventar un ahorro que no existe.
+    #[test]
+    fn en_un_archivo_minusculo_no_hay_ahorro_que_presumir() {
+        let repo = TmpRepo::new("outline-mini");
+        repo.write("a.rs", "pub fn f() {}\n");
+        let r = execute(&args(json!({"path": repo.path("a.rs")}))).unwrap();
+        assert!(
+            r.baseline_chars <= text_of(&r).len(),
+            "leer el archivo entero era más barato: no se reporta ahorro"
+        );
+    }
+
+    #[test]
+    fn archivo_sin_simbolos_o_inexistente() {
+        let repo = TmpRepo::new("outline-vacio");
+        repo.write("datos.rs", "// solo un comentario\n");
+        let out = text_of(&execute(&args(json!({"path": repo.path("datos.rs")}))).unwrap());
+        assert!(out.contains("No symbols found"));
+        assert!(execute(&args(json!({"path": repo.path("no-existe.rs")}))).is_err());
+    }
+}

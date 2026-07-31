@@ -43,7 +43,12 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
     let mut listed = 0usize;
     let mut raw_chars = 0usize; // baseline: una ruta completa por línea
 
-    for entry in WalkBuilder::new(path).hidden(false).build().flatten() {
+    for entry in WalkBuilder::new(path)
+        .hidden(false)
+        .require_git(false) // respeta .gitignore aunque no sea un repo git
+        .build()
+        .flatten()
+    {
         if !entry.file_type().map_or(false, |ft| ft.is_file()) {
             continue;
         }
@@ -117,4 +122,75 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
         "una ruta por línea",
         detail,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{args, text_of, TmpRepo};
+    use serde_json::json;
+
+    /// Antes devolvía "No files found" en un directorio con 325 archivos.
+    #[test]
+    fn sin_patron_lista_todo_agrupado_por_directorio() {
+        let repo = TmpRepo::new("find");
+        repo.write("a.md", "x");
+        repo.write("src/b.rs", "x");
+        repo.write("src/c.rs", "x");
+
+        let out = text_of(&execute(&args(json!({"path": repo.root_str()}))).unwrap());
+        assert!(out.contains("3 archivo(s)"));
+        assert!(out.contains("b.rs, c.rs"), "agrupa por directorio: {}", out);
+        assert_eq!(out.matches("src").count(), 1, "el prefijo no se repite por archivo");
+    }
+
+    #[test]
+    fn el_glob_filtra_por_nombre() {
+        let repo = TmpRepo::new("find-glob");
+        repo.write("a.md", "x");
+        repo.write("src/b.rs", "x");
+        let out = text_of(&execute(&args(json!({"path": repo.root_str(), "name": "*.md"}))).unwrap());
+        assert!(out.contains("a.md") && !out.contains("b.rs"));
+    }
+
+    #[test]
+    fn excluye_el_indice_git_y_el_archivo_de_openspec() {
+        let repo = TmpRepo::new("find-scope");
+        repo.write("vivo.md", "x");
+        repo.write(".rtk-index/index.db", "x");
+        repo.write(".git/config", "x");
+        repo.write("openspec/changes/archive/viejo/tasks.md", "x");
+
+        let out = text_of(&execute(&args(json!({"path": repo.root_str()}))).unwrap());
+        assert!(out.contains("vivo.md"));
+        assert!(!out.contains(".rtk-index") && !out.contains(".git") && !out.contains("archive"));
+    }
+
+    #[test]
+    fn respeta_gitignore() {
+        let repo = TmpRepo::new("find-ignore");
+        repo.write(".gitignore", "ignorado/\n");
+        repo.write("visible.rs", "x");
+        repo.write("ignorado/oculto.rs", "x");
+        let out = text_of(&execute(&args(json!({"path": repo.root_str()}))).unwrap());
+        assert!(out.contains("visible.rs"));
+        assert!(!out.contains("oculto.rs"));
+    }
+
+    /// Nunca truncar en silencio: hay que decir cuántos quedaron fuera.
+    #[test]
+    fn el_tope_se_anuncia() {
+        let repo = TmpRepo::new("find-tope");
+        for i in 0..(MAX_FILES + 10) {
+            repo.write(&format!("f{}.rs", i), "x");
+        }
+        let out = text_of(&execute(&args(json!({"path": repo.root_str()}))).unwrap());
+        assert!(out.contains(&format!("{} archivo(s)", MAX_FILES + 10)));
+        assert!(out.contains("+10 archivos no listados"));
+    }
+
+    #[test]
+    fn ruta_inexistente_es_error_no_lista_vacia() {
+        assert!(execute(&args(json!({"path": "/ruta/que/no/existe"}))).is_err());
+    }
 }

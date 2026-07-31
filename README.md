@@ -217,6 +217,21 @@ Si el índice aún tiene backlog, una búsqueda cuesta ~350 ms en vez de ~40; el
 
 ---
 
+## 🧪 Pruebas
+
+```bash
+cargo test
+```
+
+38 pruebas, escritas a partir de fallos reales medidos en uso, no de la cobertura por la cobertura. Las dos que más importan reproducen regresiones que llegaron a producción:
+
+- `purga_solo_con_un_recorrido_fiable` — un error de E/S al recorrer el árbol llegó a borrar la vectorización de 2742 archivos. Un recorrido incompleto significa "no lo vi", no "ya no existe".
+- `mismo_alcance_que_rtk_find` — `rtk_grep` y `rtk_find` veían universos distintos sobre la misma ruta (56 archivos frente a 16).
+
+El resto cubre el `sync` incremental (que no re-indexe de más ni purgue de menos), los topes de salida de cada herramienta, el `.gitignore`, y que la métrica no invente ahorros: que los negativos se reporten con signo, que el modo conteo no compare peras con manzanas y que el pie ponga el coste antes que el porcentaje.
+
+---
+
 ## ⚙️ Arquitectura Interna (src/index)
 
 La verdadera magia ocurre en la indexación de contexto local, que divide el código en dos almacenes sincronizados (`.rtk-index/`):

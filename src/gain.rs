@@ -430,3 +430,47 @@ fn truncate_left(s: &str, max: usize) -> String {
         format!("…{}", cut)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duraciones_relativas() {
+        assert_eq!(parse_duration("30m"), Some(1_800));
+        assert_eq!(parse_duration("24h"), Some(86_400));
+        assert_eq!(parse_duration("7d"), Some(604_800));
+        assert_eq!(parse_duration("2w"), Some(1_209_600));
+        assert_eq!(parse_duration("5x"), None);
+        assert_eq!(parse_duration("d"), None);
+        assert!(parse_duration("all").is_some());
+    }
+
+    #[test]
+    fn formato_compacto_de_cifras() {
+        assert_eq!(fmt(999), "999");
+        assert_eq!(fmt(1_500), "1.5K");
+        assert_eq!(fmt(2_400_000), "2.4M");
+    }
+
+    #[test]
+    fn el_agregado_suma_y_calcula_el_porcentaje() {
+        let ev = |b: u64, a: u64, ok: bool| Event {
+            ts: 0, tool: "t".into(), project: "/p".into(), ok, ms: 10,
+            baseline_tokens: b, actual_tokens: a, vs: "x".into(), detail: None,
+        };
+        let mut agg = Agg::new();
+        agg.add(&ev(1000, 100, true));
+        agg.add(&ev(1000, 900, false));
+        assert_eq!(agg.calls, 2);
+        assert_eq!(agg.saved(), 1000);
+        assert_eq!(agg.pct().round(), 50.0);
+        assert_eq!(agg.errors, 1, "los errores se cuentan y se muestran aparte");
+    }
+
+    #[test]
+    fn un_agregado_sin_baseline_no_divide_por_cero() {
+        let agg = Agg::new();
+        assert_eq!(agg.pct(), 0.0);
+    }
+}

@@ -227,10 +227,8 @@ impl Workspace {
         // no "ya no existe". Purgar a ciegas costaba el trabajo de vectorizar
         // esos archivos otra vez — minutos sobre un repo grande.
         let indexed_before = stored_all.len();
-        let trustworthy = walk_errors == 0
-            && (indexed_before == 0 || total * 2 >= indexed_before);
         let mut removed = 0;
-        if trustworthy {
+        if can_purge(walk_errors, total, indexed_before) {
             for stored_path in db::all_paths(&self.conn)? {
                 if !seen.contains(&stored_path) {
                     db::remove_file(&self.conn, &stored_path)?;
@@ -579,6 +577,15 @@ pub fn rrf(lists: &[Vec<Candidate>], k: usize) -> Vec<Candidate> {
         .collect()
 }
 
+/// ¿Podemos fiarnos del recorrido para borrar lo que no apareció?
+///
+/// Solo si no hubo errores de E/S y el número de archivos vistos es coherente
+/// con lo ya indexado. Un recorrido incompleto significa "no lo vi", no "ya no
+/// existe": purgar a ciegas cuesta re-vectorizar esos archivos — minutos.
+fn can_purge(walk_errors: usize, seen: usize, indexed_before: usize) -> bool {
+    walk_errors == 0 && (indexed_before == 0 || seen * 2 >= indexed_before)
+}
+
 /// Recorre el árbol en paralelo y devuelve los archivos indexables con su
 /// mtime. Respeta `.gitignore` (vía `ignore`) y salta el propio índice y el
 /// histórico archivado de OpenSpec.
@@ -587,6 +594,8 @@ fn walk_files(root: &str) -> (Vec<(PathBuf, i64)>, usize) {
     let errors = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     WalkBuilder::new(root)
         .hidden(false)
+        // Sin esto, `.gitignore` solo se aplica dentro de un repo git.
+        .require_git(false)
         .build_parallel()
         .run(|| {
             let tx = tx.clone();
@@ -648,4 +657,127 @@ pub fn read_line_range(path: &str, start: usize, end: usize) -> Result<String, S
         out.push_str(&format!("{:>5}\t{}\n", start + i, line));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TmpRepo;
+
+    /// La regla que evita el fallo que borró 2742 vectorizaciones: un recorrido
+    /// con errores, o sospechosamente corto, no autoriza a purgar nada.
+    #[test]
+    fn purga_solo_con_un_recorrido_fiable() {
+        assert!(can_purge(0, 100, 100), "sin errores y todo visto");
+        assert!(can_purge(0, 99, 100), "un archivo borrado de verdad");
+        assert!(can_purge(0, 51, 100), "la mitad justa aún se acepta");
+        assert!(can_purge(0, 5, 0), "índice vacío: nada que proteger");
+        assert!(!can_purge(1, 100, 100), "un error de E/S invalida la purga");
+        assert!(!can_purge(0, 49, 100), "vimos menos de la mitad: sospechoso");
+        assert!(!can_purge(0, 0, 100), "no vimos nada: jamás purgar");
+    }
+
+    #[test]
+    fn sync_indexa_y_luego_no_repite_trabajo() {
+        let repo = TmpRepo::new("sync");
+        repo.write("a.rs", "pub fn alpha() -> u8 { 1 }\n");
+        repo.write("sub/b.rs", "pub fn beta() -> u8 { 2 }\n");
+
+        let mut ws = Workspace::open(&repo.root_str()).unwrap();
+        let first = ws.sync().unwrap();
+        assert_eq!(first.total_files, 2);
+        assert_eq!(first.reindexed, 2);
+        assert!(ws.symbol_count() >= 2);
+
+        // Segunda pasada sin cambios: nada que re-indexar (atajo por mtime).
+        let second = ws.sync().unwrap();
+        assert_eq!(second.total_files, 2);
+        assert_eq!(second.reindexed, 0);
+        assert_eq!(second.removed, 0);
+    }
+
+    #[test]
+    fn sync_reindexa_lo_editado_y_purga_lo_borrado() {
+        let repo = TmpRepo::new("sync-cambios");
+        repo.write("a.rs", "pub fn alpha() {}\n");
+        repo.write("b.rs", "pub fn beta() {}\n");
+        let mut ws = Workspace::open(&repo.root_str()).unwrap();
+        ws.sync().unwrap();
+
+        // Editar uno: el mtime cambia y el contenido también.
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // mtime en segundos
+        repo.write("a.rs", "pub fn alpha_renombrada() {}\n");
+        let s = ws.sync().unwrap();
+        assert_eq!(s.reindexed, 1, "solo el archivo editado");
+        assert_eq!(s.removed, 0);
+        assert!(!ws.lookup_symbol("alpha_renombrada").unwrap().is_empty());
+
+        // Borrar uno de verdad: ahí sí se purga.
+        std::fs::remove_file(repo.root.join("b.rs")).unwrap();
+        let s = ws.sync().unwrap();
+        assert_eq!(s.total_files, 1);
+        assert_eq!(s.removed, 1);
+        assert!(ws.lookup_symbol("beta").unwrap().is_empty());
+    }
+
+    /// Un `touch` sin cambio de contenido no debe re-indexar ni invalidar nada:
+    /// esa era la puerta por la que se perdían vectores.
+    #[test]
+    fn tocar_un_archivo_sin_cambiarlo_no_reindexa() {
+        let repo = TmpRepo::new("touch");
+        let f = repo.write("a.rs", "pub fn alpha() {}\n");
+        let mut ws = Workspace::open(&repo.root_str()).unwrap();
+        ws.sync().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let content = std::fs::read_to_string(&f).unwrap();
+        std::fs::write(&f, content).unwrap(); // mismo contenido, nuevo mtime
+
+        let s = ws.sync().unwrap();
+        assert_eq!(s.reindexed, 0, "mismo hash: no se re-indexa");
+
+        // Y el mtime quedó refrescado, así que la siguiente pasada tampoco lee.
+        let s = ws.sync().unwrap();
+        assert_eq!(s.reindexed, 0);
+    }
+
+    #[test]
+    fn el_indice_ignora_su_propio_directorio_y_el_archivo_de_openspec() {
+        let repo = TmpRepo::new("scope");
+        repo.write("vivo.md", "# Vivo\ncontenido\n");
+        repo.write("openspec/changes/activo/tasks.md", "# Tareas\n- [ ] algo\n");
+        repo.write("openspec/changes/archive/viejo/tasks.md", "# Viejo\n- [x] ya\n");
+
+        let mut ws = Workspace::open(&repo.root_str()).unwrap();
+        let s = ws.sync().unwrap();
+        assert_eq!(s.total_files, 2, "el histórico archivado no se indexa");
+    }
+
+    #[test]
+    fn rrf_fusiona_y_prioriza_lo_que_aparece_en_ambas_listas() {
+        let c = |name: &str| Candidate {
+            path: format!("{}.rs", name),
+            name: name.to_string(),
+            kind: "function".into(),
+            start_line: 1,
+            end_line: 2,
+        };
+        let lexica = vec![c("solo_bm25"), c("en_ambas")];
+        let semantica = vec![c("en_ambas"), c("solo_vec")];
+        let top = rrf(&[lexica, semantica], 3);
+        assert_eq!(top[0].name, "en_ambas", "la que aparece en ambas vías gana");
+        assert_eq!(top.len(), 3, "sin duplicados");
+    }
+
+    #[test]
+    fn read_line_range_devuelve_el_tramo_pedido_y_falla_fuera_de_rango() {
+        let repo = TmpRepo::new("rango");
+        repo.write("f.rs", "uno\ndos\ntres\ncuatro\n");
+        let out = read_line_range(&repo.path("f.rs"), 2, 3).unwrap();
+        assert!(out.contains("dos") && out.contains("tres"));
+        assert!(!out.contains("uno") && !out.contains("cuatro"));
+        // El final se recorta al tamaño del archivo en vez de fallar.
+        assert!(read_line_range(&repo.path("f.rs"), 3, 99).unwrap().contains("cuatro"));
+        assert!(read_line_range(&repo.path("f.rs"), 99, 100).is_err());
+    }
 }

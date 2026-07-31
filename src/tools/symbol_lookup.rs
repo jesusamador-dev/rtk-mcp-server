@@ -12,6 +12,10 @@ const MAX_BODIES: usize = 6; // límite de cuerpos completos para acotar tokens
 /// grandes son 19 KB. Al agotarse, el resto se muestra como firma.
 const OUTPUT_BUDGET: usize = 5_000;
 
+/// Recorte de un cuerpo individual. Sin esto, una sola función enorme se lleva
+/// el presupuesto entero y la respuesta se dispara igualmente.
+const MAX_BODY_LINES: usize = 120;
+
 pub fn execute(params: &Value) -> Result<ToolResult, String> {
     let arguments = params.get("arguments").unwrap_or(&Value::Null);
     let name = arguments
@@ -67,11 +71,21 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
             r.name, r.kind, r.path, r.start_line, r.end_line
         ));
         if i < MAX_BODIES && used < OUTPUT_BUDGET {
-            match index::read_line_range(&r.path, r.start_line, r.end_line) {
+            let capped_end = (r.start_line + MAX_BODY_LINES).min(r.end_line);
+            match index::read_line_range(&r.path, r.start_line, capped_end) {
                 Ok(code) => {
                     let code = code.trim_end().to_string();
                     used += code.len();
                     out.push(code);
+                    if capped_end < r.end_line {
+                        out.push(format!(
+                            "   … (+{} líneas; el cuerpo completo está en {}:L{}-{})",
+                            r.end_line - capped_end,
+                            r.path,
+                            r.start_line,
+                            r.end_line
+                        ));
+                    }
                 }
                 Err(e) => out.push(format!("[no se pudo leer el cuerpo: {}]", e)),
             }
@@ -96,4 +110,43 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
         "leer enteros los archivos con el símbolo",
         name,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{args, text_of, TmpRepo};
+    use serde_json::json;
+
+    /// Seis cuerpos grandes eran 19 KB: el límite por número de coincidencias
+    /// no acota nada. Pasado el presupuesto, firma en vez de cuerpo.
+    #[test]
+    fn el_presupuesto_de_salida_acota_la_respuesta() {
+        let repo = TmpRepo::new("symbols");
+        let cuerpo: String = (0..400).map(|i| format!("    let v{} = {};\n", i, i)).collect();
+        for f in 0..6 {
+            repo.write(&format!("m{}.rs", f), &format!("pub fn duplicada() {{\n{}}}\n", cuerpo));
+        }
+
+        let out = text_of(
+            &execute(&args(json!({"name": "duplicada", "path": repo.root_str()}))).unwrap(),
+        );
+        assert!(out.contains("6 coincidencia(s)"), "las encuentra todas");
+        assert!(out.contains("presupuesto de salida"), "y avisa de lo que recortó");
+        assert!(
+            out.len() < OUTPUT_BUDGET * 2,
+            "la respuesta no se dispara: {} bytes",
+            out.len()
+        );
+        assert!(out.contains("líneas; el cuerpo completo está en"), "recorta el cuerpo largo");
+    }
+
+    #[test]
+    fn simbolo_inexistente_no_reporta_ahorro() {
+        let repo = TmpRepo::new("symbols-vacio");
+        repo.write("a.rs", "pub fn existe() {}\n");
+        let r = execute(&args(json!({"name": "no_existe", "path": repo.root_str()}))).unwrap();
+        assert!(text_of(&r).contains("Ningún símbolo"));
+        assert_eq!(r.baseline_chars, text_of(&r).len(), "sin ahorro que reportar");
+    }
 }
