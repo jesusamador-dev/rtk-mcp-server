@@ -32,6 +32,10 @@ const SEARCH_EMBED_MAX: usize = 32;
 /// Tope por paso de warm-up ocioso.
 const IDLE_EMBED_MAX: usize = 64;
 
+/// Lote en modo ocioso: más pequeño que el normal para que la interrupción sea
+/// fina — una petición espera como mucho un lote.
+const IDLE_BATCH: usize = 12;
+
 /// Presupuesto de TIEMPO para calentar el índice dentro de una búsqueda. El
 /// usuario espera su resultado, no el warm-up: sobre un repo con decenas de
 /// miles de símbolos pendientes, el tope por conteo hacía que cada búsqueda
@@ -159,7 +163,7 @@ impl Workspace {
         // Descubrimiento en paralelo: recorrer y hacer `stat` a miles de
         // archivos en un hilo era el grueso del `sync`. Solo se recolecta aquí;
         // SQLite y tantivy se tocan después, en serie.
-        let candidates = walk_files(&self.root);
+        let (candidates, walk_errors) = walk_files(&self.root);
 
         for (path_buf, mtime) in candidates {
             let path = path_buf.as_path();
@@ -218,15 +222,28 @@ impl Workspace {
             dirty = true;
         }
 
-        // Purga de archivos borrados en ambos almacenes.
+        // Purga de archivos borrados. Solo si podemos FIARNOS del recorrido:
+        // un error de E/S o un walk sospechosamente corto significa "no lo vi",
+        // no "ya no existe". Purgar a ciegas costaba el trabajo de vectorizar
+        // esos archivos otra vez — minutos sobre un repo grande.
+        let indexed_before = stored_all.len();
+        let trustworthy = walk_errors == 0
+            && (indexed_before == 0 || total * 2 >= indexed_before);
         let mut removed = 0;
-        for stored_path in db::all_paths(&self.conn)? {
-            if !seen.contains(&stored_path) {
-                db::remove_file(&self.conn, &stored_path)?;
-                self.search.delete_file(&writer, &stored_path);
-                removed += 1;
-                dirty = true;
+        if trustworthy {
+            for stored_path in db::all_paths(&self.conn)? {
+                if !seen.contains(&stored_path) {
+                    db::remove_file(&self.conn, &stored_path)?;
+                    self.search.delete_file(&writer, &stored_path);
+                    removed += 1;
+                    dirty = true;
+                }
             }
+        } else {
+            eprintln!(
+                "[sync] purga omitida: {} error(es) al recorrer, {} archivos vistos de {} indexados",
+                walk_errors, total, indexed_before
+            );
         }
 
         if dirty {
@@ -273,19 +290,34 @@ impl Workspace {
     /// el grueso del trabajo lo hace `ensure_vectors_idle` entre peticiones, así
     /// que aquí solo se cubre lo recién editado.
     pub fn ensure_vectors(&mut self) -> Result<VectorStats, String> {
-        self.ensure_vectors_budget(SEARCH_EMBED_MAX, Some(Duration::from_millis(WARMUP_BUDGET_MS)))
+        self.ensure_vectors_budget(
+            SEARCH_EMBED_MAX,
+            Some(Duration::from_millis(WARMUP_BUDGET_MS)),
+            &|| false,
+        )
     }
 
     /// Calienta en tiempo ocioso, entre peticiones MCP. El lote es corto para
     /// que una petición que llegue a media vectorización no espere apenas.
-    pub fn ensure_vectors_idle(&mut self) -> Result<VectorStats, String> {
-        self.ensure_vectors_budget(IDLE_EMBED_MAX, Some(Duration::from_millis(IDLE_BUDGET_MS)))
+    /// `interrupted` se consulta entre lotes: si llega una petición mientras
+    /// calentamos, se corta ahí. Sin esto, una búsqueda podía esperar a que
+    /// terminara el lote en curso — 650 ms de latencia que no se veían en el
+    /// tiempo interno de la herramienta, solo de puertas afuera.
+    pub fn ensure_vectors_idle(
+        &mut self,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<VectorStats, String> {
+        self.ensure_vectors_budget(
+            IDLE_EMBED_MAX,
+            Some(Duration::from_millis(IDLE_BUDGET_MS)),
+            interrupted,
+        )
     }
 
     /// Calienta sin límite de tiempo: para `init`, que sí viene a terminar el
     /// trabajo y muestra progreso mientras tanto.
     pub fn ensure_vectors_full(&mut self) -> Result<VectorStats, String> {
-        self.ensure_vectors_budget(MAX_EMBED_PER_CALL, None)
+        self.ensure_vectors_budget(MAX_EMBED_PER_CALL, None, &|| false)
     }
 
     /// Vectoriza los símbolos de archivos cuyo hash cambió, por lotes, hasta
@@ -295,6 +327,7 @@ impl Workspace {
         &mut self,
         max_symbols: usize,
         deadline: Option<Duration>,
+        interrupted: &dyn Fn() -> bool,
     ) -> Result<VectorStats, String> {
         let _t = crate::trace::span("ensure_vectors");
         let t0 = Instant::now();
@@ -308,6 +341,11 @@ impl Workspace {
                 db::remove_vectors(&self.conn, vp)?;
                 self.vec_cache = None;
             }
+        }
+
+        // Si ya hay una petición esperando, ni empezamos.
+        if interrupted() {
+            return Ok(VectorStats { embedded_now: 0, remaining: 1 });
         }
 
         let mut batch: Vec<Pending> = Vec::new();
@@ -326,6 +364,13 @@ impl Workspace {
                 continue;
             }
             if spent {
+                remaining += symbols.len();
+                continue;
+            }
+            // Leer archivos y trocear textos también cuesta: si llega una
+            // petición durante la recolección, se corta aquí y no al flush.
+            if interrupted() {
+                spent = true;
                 remaining += symbols.len();
                 continue;
             }
@@ -358,7 +403,12 @@ impl Workspace {
             // Lote completo: embeber ya, y decidir si queda presupuesto. Cortar
             // por lotes (y no por archivo) permite respetar un deadline sin
             // dejar ningún archivo a medio vectorizar.
-            if texts.len() >= EMBED_BATCH.min(max_symbols) {
+            let batch_size = if max_symbols <= IDLE_EMBED_MAX {
+                IDLE_BATCH.min(max_symbols)
+            } else {
+                EMBED_BATCH
+            };
+            if texts.len() >= batch_size {
                 let t_batch = Instant::now();
                 embedded_now += self.flush_batch(&batch, std::mem::take(&mut texts))?;
                 batch.clear();
@@ -367,7 +417,7 @@ impl Workspace {
                 // "ya me pasé" siempre lo excedía en un lote entero.
                 let over_time = deadline
                     .map_or(false, |d| t0.elapsed() + t_batch.elapsed() > d);
-                if over_time || embedded_now >= max_symbols {
+                if over_time || embedded_now >= max_symbols || interrupted() {
                     spent = true;
                 }
             }
@@ -532,14 +582,21 @@ pub fn rrf(lists: &[Vec<Candidate>], k: usize) -> Vec<Candidate> {
 /// Recorre el árbol en paralelo y devuelve los archivos indexables con su
 /// mtime. Respeta `.gitignore` (vía `ignore`) y salta el propio índice y el
 /// histórico archivado de OpenSpec.
-fn walk_files(root: &str) -> Vec<(PathBuf, i64)> {
+fn walk_files(root: &str) -> (Vec<(PathBuf, i64)>, usize) {
     let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, i64)>();
+    let errors = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     WalkBuilder::new(root)
         .hidden(false)
         .build_parallel()
         .run(|| {
             let tx = tx.clone();
+            let errors = errors.clone();
             Box::new(move |result| {
+                if result.is_err() {
+                    // No se pudo leer una entrada: lo contamos para que `sync`
+                    // no confunda "no lo vi" con "ya no existe".
+                    errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 if let Ok(entry) = result {
                     if entry.file_type().map_or(false, |ft| ft.is_file()) {
                         let path = entry.path();
@@ -563,7 +620,10 @@ fn walk_files(root: &str) -> Vec<(PathBuf, i64)> {
             })
         });
     drop(tx); // cierra el canal: sin esto, `rx` esperaría para siempre
-    rx.into_iter().collect()
+    (
+        rx.into_iter().collect(),
+        errors.load(std::sync::atomic::Ordering::Relaxed),
+    )
 }
 
 fn slice_lines(lines: &[&str], start: usize, end: usize) -> String {

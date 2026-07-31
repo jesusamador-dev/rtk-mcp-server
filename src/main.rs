@@ -10,8 +10,13 @@ mod update;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{self, BufRead};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
+
+/// Peticiones encoladas sin atender. El warm-up ocioso la consulta entre lotes
+/// para cortar en cuanto haya trabajo real que hacer.
+static PENDING: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcRequest {
@@ -125,6 +130,7 @@ fn run_server() {
         let mut handle = stdin.lock();
         let mut line = String::new();
         while handle.read_line(&mut line).unwrap_or(0) > 0 {
+            PENDING.fetch_add(1, Ordering::Relaxed);
             if tx.send(std::mem::take(&mut line)).is_err() {
                 return;
             }
@@ -133,13 +139,19 @@ fn run_server() {
 
     loop {
         match rx.try_recv() {
-            Ok(line) => dispatch(&line),
+            Ok(line) => {
+                PENDING.fetch_sub(1, Ordering::Relaxed);
+                dispatch(&line)
+            }
             Err(mpsc::TryRecvError::Empty) => {
                 // Nada que atender: un paso de warm-up. Si no queda backlog,
                 // dormimos en el canal hasta la próxima petición.
                 if !warm_step() {
                     match rx.recv() {
-                        Ok(line) => dispatch(&line),
+                        Ok(line) => {
+                            PENDING.fetch_sub(1, Ordering::Relaxed);
+                            dispatch(&line)
+                        }
                         Err(_) => break,
                     }
                 }
@@ -176,7 +188,7 @@ fn warm_step() -> bool {
         if step % 50 == 0 {
             ws.sync()?;
         }
-        ws.ensure_vectors_idle()
+        ws.ensure_vectors_idle(&|| PENDING.load(Ordering::Relaxed) > 0)
     });
     match outcome {
         Ok(stats) if stats.remaining > 0 => true,
