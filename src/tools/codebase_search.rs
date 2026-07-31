@@ -30,39 +30,39 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
 
     const POOL: usize = 30; // candidatos por vía antes de fusionar
 
-    let mut ws = index::Workspace::open(root)?;
-    let stats = ws.sync()?;
+    let (hits, freshness) = index::with_workspace(root, |ws| {
+        let stats = ws.sync()?;
 
-    // Vía léxica (BM25) — siempre disponible.
-    let bm25 = ws.search_bm25(query, POOL)?;
+        // Vía léxica (BM25) — siempre disponible.
+        let bm25 = ws.search_bm25(query, POOL)?;
 
-    // Vía semántica (embeddings) — perezosa y acotada; si falla, degradamos a BM25.
-    let mut mode = String::from("híbrido (BM25 + semántico)");
-    let semantic = match ws.ensure_vectors() {
-        Ok(vstats) => {
-            if vstats.remaining > 0 {
-                mode = format!(
-                    "híbrido · índice semántico calentando ({} pendientes)",
-                    vstats.remaining
-                );
+        // Vía semántica (embeddings) — perezosa y acotada; si falla, degradamos a BM25.
+        let mut mode = String::from("híbrido (BM25 + semántico)");
+        let semantic = match ws.ensure_vectors() {
+            Ok(vstats) => {
+                if vstats.remaining > 0 {
+                    mode = format!(
+                        "híbrido · índice semántico calentando ({} pendientes)",
+                        vstats.remaining
+                    );
+                }
+                ws.search_semantic(query, POOL).unwrap_or_default()
             }
-            ws.search_semantic(query, POOL).unwrap_or_default()
-        }
-        Err(e) => {
-            eprintln!("[codebase_search] semántico desactivado: {}", e);
-            mode = String::from("BM25 (semántico no disponible)");
-            Vec::new()
-        }
-    };
+            Err(e) => {
+                eprintln!("[codebase_search] semántico desactivado: {}", e);
+                mode = String::from("BM25 (semántico no disponible)");
+                Vec::new()
+            }
+        };
 
-    let hits = index::rrf(&[bm25, semantic], k);
-
-    let freshness = format!(
-        "[{} · {} archivos · {} símbolos vectorizados]",
-        mode,
-        stats.total_files,
-        ws.vector_count()
-    );
+        let freshness = format!(
+            "[{} · {} archivos · {} símbolos vectorizados]",
+            mode,
+            stats.total_files,
+            ws.vector_count()
+        );
+        Ok((index::rrf(&[bm25, semantic], k), freshness))
+    })?;
 
     if hits.is_empty() {
         return Ok(ToolResult::text_no_gain(
@@ -109,5 +109,10 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
         }
     }
 
-    Ok(ToolResult::text(out.join("\n"), baseline, query))
+    Ok(ToolResult::text(
+        out.join("\n"),
+        baseline,
+        "leer enteros los archivos con resultados",
+        query,
+    ))
 }

@@ -61,6 +61,15 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
 }
 
 /// hash+mtime almacenados para un archivo (para decidir si re-indexar).
+/// Refresca solo el mtime: el contenido no cambió (mismo hash), así que no hay
+/// que re-parsear ni re-indexar; basta con no volver a leerlo la próxima vez.
+pub fn touch_mtime(conn: &Connection, path: &str, mtime: i64) {
+    let _ = conn.execute(
+        "UPDATE files SET mtime = ?2 WHERE path = ?1",
+        params![path, mtime],
+    );
+}
+
 pub fn stored_meta(conn: &Connection, path: &str) -> Option<(String, i64)> {
     conn.query_row(
         "SELECT hash, mtime FROM files WHERE path = ?1",

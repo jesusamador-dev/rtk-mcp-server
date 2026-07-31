@@ -45,7 +45,7 @@ pub fn run_init(root: &str) -> i32 {
     // 2) Vectores semánticos — completo (sin el tope por-llamada), con progreso.
     eprintln!("[2/3] Vectorizando (embeddings locales; solo la 1ª vez)…");
     loop {
-        match ws.ensure_vectors() {
+        match ws.ensure_vectors_full() {
             Ok(vs) => {
                 eprintln!(
                     "      {} vectorizados · {} pendientes…",

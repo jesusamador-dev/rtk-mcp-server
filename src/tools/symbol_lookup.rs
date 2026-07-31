@@ -21,9 +21,12 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
         .unwrap_or_else(crate::context::default_root);
     let root = root.as_str();
 
-    let mut ws = index::Workspace::open(root)?;
-    let stats = ws.sync()?;
-    let rows = ws.lookup_symbol(name)?;
+    let (stats, rows, symbol_count) = index::with_workspace(root, |ws| {
+        let stats = ws.sync()?;
+        let rows = ws.lookup_symbol(name)?;
+        let count = ws.symbol_count();
+        Ok((stats, rows, count))
+    })?;
 
     let freshness = format!(
         "[índice: {} archivos, {} re-indexados, {} eliminados]",
@@ -34,9 +37,7 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
         return Ok(ToolResult::text_no_gain(
             format!(
                 "Ningún símbolo llamado '{}' encontrado.\n{} ({} símbolos totales)",
-                name,
-                freshness,
-                ws.symbol_count()
+                name, freshness, symbol_count
             ),
             name,
         ));
@@ -77,5 +78,10 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
         ));
     }
 
-    Ok(ToolResult::text(out.join("\n"), baseline, name))
+    Ok(ToolResult::text(
+        out.join("\n"),
+        baseline,
+        "leer enteros los archivos con el símbolo",
+        name,
+    ))
 }
