@@ -36,6 +36,9 @@ pub struct Event {
     pub ms: u64,
     pub baseline_tokens: u64,
     pub actual_tokens: u64,
+    /// Contra qué se comparó el baseline ("leer el archivo completo"…).
+    #[serde(default)]
+    pub vs: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -98,7 +101,16 @@ fn now() -> u64 {
 }
 
 /// Registra una llamada. Silencioso ante cualquier error de E/S.
-pub fn record(tool: &str, ok: bool, ms: u64, baseline_chars: usize, actual_chars: usize, detail: Option<String>) {
+#[allow(clippy::too_many_arguments)]
+pub fn record(
+    tool: &str,
+    ok: bool,
+    ms: u64,
+    baseline_chars: usize,
+    actual_chars: usize,
+    vs: &str,
+    detail: Option<String>,
+) {
     if !enabled() {
         return;
     }
@@ -110,6 +122,7 @@ pub fn record(tool: &str, ok: bool, ms: u64, baseline_chars: usize, actual_chars
         ms,
         baseline_tokens: tokens(baseline_chars),
         actual_tokens: tokens(actual_chars),
+        vs: vs.to_string(),
         detail: detail.map(|d| truncate(&d, 80)),
     };
     let _ = append(&ev);

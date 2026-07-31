@@ -4,6 +4,7 @@ mod gain;
 mod index;
 mod telemetry;
 mod tools;
+mod trace;
 mod update;
 
 use serde::{Deserialize, Serialize};
@@ -134,19 +135,22 @@ fn run_server() {
     }
 }
 
-/// Pie de la respuesta: latencia y, cuando hay ahorro medible, cuánto se
-/// ahorró frente a leer los archivos completos / la salida cruda.
-fn footer(ms: u64, baseline_chars: usize, actual_chars: usize) -> String {
+/// Pie de la respuesta. El dato que importa va primero: lo que ESTA respuesta
+/// cuesta. El ahorro va después y nombra su rival — un "-95 %" sin decir contra
+/// qué invita a creer que se ahorró algo que quizá nadie iba a gastar.
+fn footer(ms: u64, baseline_chars: usize, actual_chars: usize, vs: &str) -> String {
+    let cost = telemetry::tokens(actual_chars);
     if baseline_chars > actual_chars {
         let diff = baseline_chars - actual_chars;
         format!(
-            "[{} ms · ahorro ~{}% (~{} tokens)]",
+            "[{} ms · ~{} tokens · −{}% vs {}]",
             ms,
+            cost,
             diff * 100 / baseline_chars,
-            telemetry::tokens(diff)
+            vs
         )
     } else {
-        format!("[Execution time: {} ms]", ms)
+        format!("[{} ms · ~{} tokens]", ms, cost)
     }
 }
 
@@ -177,7 +181,7 @@ fn handle_request(req: RpcRequest) {
                     "tools": [
                         {
                             "name": "bulk_read_files",
-                            "description": "Lee múltiples archivos en paralelo. Nota: No provee ahorro de tokens sobre código fuente.",
+                            "description": "Lee múltiples archivos completos en paralelo. NO ahorra tokens frente a Read: devuelve el contenido íntegro. Úsala solo cuando de verdad necesitas los archivos enteros.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -196,24 +200,24 @@ fn handle_request(req: RpcRequest) {
                         },
                         {
                             "name": "rtk_grep",
-                            "description": "Búsqueda ultra-rápida y altamente comprimida (hasta 70% ahorro tokens) usando rtk grep.",
+                            "description": "grep comprimido vía rtk. Devuelve líneas coincidentes con su ancla path:línea. Para localizar por concepto usa codebase_search; esto es para patrones exactos.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "query": { "type": "string", "description": "Término de búsqueda o regex" },
-                                    "path": { "type": "string", "description": "Directorio base de búsqueda" }
+                                    "path": { "type": "string", "description": "Archivo o directorio donde buscar (por defecto '.')" }
                                 },
                                 "required": ["query"]
                             }
                         },
                         {
                             "name": "rtk_find",
-                            "description": "Lista estructura de archivos ultra-comprimida usando rtk find.",
+                            "description": "Lista archivos agrupados por directorio, respetando .gitignore (excluye .git, .rtk-index y el archivo histórico de OpenSpec). Tope de 400 archivos, y dice cuántos quedaron fuera.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "path": { "type": "string", "description": "Directorio de búsqueda" },
-                                    "name": { "type": "string", "description": "Patrón opcional (ej. *.ts)" }
+                                    "name": { "type": "string", "description": "Glob opcional sobre el nombre (ej. *.ts). Sin él, lista todos." }
                                 }
                             }
                         },
@@ -284,7 +288,12 @@ fn handle_request(req: RpcRequest) {
                         if let Some(content) = res.get_mut("content").and_then(|c| c.as_array_mut()) {
                             if let Some(first) = content.get_mut(0) {
                                 if let Some(text) = first.get("text").and_then(|t| t.as_str()) {
-                                    let footer = footer(elapsed_ms, tr.baseline_chars, text.len());
+                                    let footer = footer(
+                                        elapsed_ms,
+                                        tr.baseline_chars,
+                                        text.len(),
+                                        tr.baseline_label,
+                                    );
                                     let new_text = format!("{}\n\n{}", text, footer);
                                     actual_chars = new_text.len();
                                     first["text"] = Value::String(new_text);
@@ -297,6 +306,7 @@ fn handle_request(req: RpcRequest) {
                             elapsed_ms,
                             tr.baseline_chars,
                             actual_chars,
+                            tr.baseline_label,
                             tr.detail,
                         );
                         send_response(id, res)
@@ -304,7 +314,15 @@ fn handle_request(req: RpcRequest) {
                     Err(e) => {
                         // Una llamada fallida no ahorra nada: baseline = coste real.
                         let msg = format!("{} (Execution time: {} ms)", e, elapsed_ms);
-                        telemetry::record(name, false, elapsed_ms, msg.len(), msg.len(), Some(e));
+                        telemetry::record(
+                            name,
+                            false,
+                            elapsed_ms,
+                            msg.len(),
+                            msg.len(),
+                            "llamada fallida",
+                            Some(e),
+                        );
                         send_error(id, -32603, &msg)
                     }
                 }

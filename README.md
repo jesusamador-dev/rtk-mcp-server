@@ -13,7 +13,7 @@ Este proyecto nació como un puente para integrar *Rust Token Killer (RTK)*, per
 *   **AST nativo con Tree-Sitter:** Analiza la sintaxis de TypeScript/JS/TSX, Rust y Python para extraer las firmas exactas de clases, funciones y estructuras (sin leer el cuerpo completo).
 *   **Búsqueda Semántica Local (Vectores):** Genera embeddings localmente con `fastembed` (ONNX) usando un modelo **multilingüe** (E5-small) — ideal para bases de código con identificadores y comentarios en español. Se fusiona con BM25 (Reciprocal Rank Fusion) en `codebase_search`.
 *   **Indexado de specs (SDD):** Detecta si el repo usa **OpenSpec** (`openspec/`) o **Spec Kit** (`.specify/` · `memory/constitution.md`) e indexa sus specs markdown por encabezado (`#`/`##`…), excluyendo `openspec/changes/archive/`. Así `codebase_search` recupera secciones de spec **y** código juntos — clave para no quemar tokens releyendo specs enteras en flujos Spec-Driven Development.
-*   **Integración con RTK:** Wrappers nativos para ejecutar `rtk grep` y `rtk find` logrando ahorros de tokens del 60% al 80%.
+*   **Integración con RTK:** `rtk_grep` delega en `rtk grep` (comprimido). `rtk_find` es nativo: usa el mismo recorrido que el indexador, así que respeta `.gitignore` y no te devuelve `node_modules` ni el histórico archivado.
 *   **Menos tokens, no solo "más rápido":** El objetivo no es leer archivos a mayor velocidad (el I/O nativo apenas cambia el costo), sino **leer menos**: entregar a la IA el fragmento exacto en lugar del archivo completo. Para el caso en que sí necesitas varios archivos enteros, `bulk_read_files` usa lectura nativa multihilo (`std::fs`).
 *   **Telemetría de ahorro medido:** cada llamada compara la respuesta real contra su *baseline* (leer los archivos completos, o la salida cruda de `grep`/`find`/`git diff`) y lo registra. `rtk-index gain` te muestra cuántos tokens llevas ahorrados, por herramienta y por proyecto.
 
@@ -28,8 +28,8 @@ El servidor expone el siguiente menú de herramientas a tu cliente MCP:
 | `codebase_search` | Búsqueda **híbrida (BM25 + semántica, fusión RRF)** sobre el código: devuelve los fragmentos más relevantes con su ancla `path:líneas`. Encuentra *qué tocar* a partir de una descripción, aunque no conozcas los nombres exactos. |
 | `symbol_lookup` | Busca la definición exacta de un símbolo (función/clase) por nombre utilizando el índice de SQLite persistente. |
 | `file_outline` | Extrae las firmas de un archivo usando `tree-sitter` (sin leer el cuerpo) gastando mínimos tokens. Ideal para orientarse en un archivo grande. |
-| `rtk_grep` | Búsqueda ultra-rápida vía `rtk grep` comprimiendo radicalmente los resultados (hasta 70% de ahorro de tokens). |
-| `rtk_find` | Búsqueda y listado comprimido de estructura de directorios vía `rtk find`. |
+| `rtk_grep` | `grep` comprimido vía `rtk`, con su ancla `path:línea`. Para patrones exactos; para buscar por concepto, `codebase_search`. |
+| `rtk_find` | Lista archivos agrupados por directorio, **respetando `.gitignore`** (excluye `.git`, `.rtk-index` y el histórico de OpenSpec). Tope de 400, y dice cuántos quedaron fuera. |
 | `bulk_read_files` | Lectura masiva nativa y paralela que enumera las líneas estilo `cat -n`. Extremadamente veloz gracias al paralelismo de hilos de Rust. |
 | `get_minified_diff` | Ejecuta `git diff` canalizando los cambios de manera ultra-comprimida. |
 
@@ -92,11 +92,14 @@ Cada llamada MCP se registra con dos magnitudes: el **baseline** (lo que habría
 | `codebase_search` | Los archivos completos donde caen los resultados (lo que habría costado abrirlos con `Read`) |
 | `symbol_lookup` | Los archivos completos que contienen alguna definición del símbolo |
 | `file_outline` | El archivo completo |
-| `rtk_grep` / `rtk_find` | La salida cruda de `grep -rn` / `find` sobre el mismo alcance |
+| `rtk_grep` | La salida cruda de `grep -rn` sobre el mismo alcance |
+| `rtk_find` | Las mismas rutas sin agrupar, una por línea (mide la compresión, no la exclusión) |
 | `get_minified_diff` | El `git diff` nativo |
 | `bulk_read_files` | Su propia salida — devuelve los archivos enteros, **no ahorra** (0 %) |
 
-Si un baseline no se puede medir (o la llamada falla), se usa el coste real: 0 % de ahorro. La telemetría nunca infla el resultado.
+Si un baseline no se puede medir (o la llamada falla), se usa el coste real: 0 % de ahorro. **Los ahorros negativos se reportan como tales**: si la respuesta salió más cara que su rival, lo verás con signo menos.
+
+> ⚠️ **El baseline es un contrafactual, y puede no ser el tuyo.** El ahorro se mide contra leer el archivo completo o la salida cruda del comando. Si tu alternativa real era un `grep` dirigido o un `ls` de un solo directorio, el ahorro es menor —y puede ser negativo—. Un "−95 % vs find crudo" no significa que hayas ahorrado: significa que un `find` crudo habría costado eso. Por eso el pie de cada respuesta pone **primero lo que cuesta** y nombra su rival, y por eso existe `--worst`.
 
 ```bash
 rtk-index gain                    # resumen global
@@ -104,6 +107,7 @@ rtk-index gain --project .        # solo este workspace
 rtk-index gain --since 7d         # 30m · 24h · 7d · 2w
 rtk-index gain --tool codebase_search
 rtk-index gain --history 30       # últimas 30 llamadas
+rtk-index gain --worst 15         # las 15 llamadas MÁS CARAS en tokens reales
 rtk-index gain --json             # para scripts
 rtk-index gain --reset            # borra el historial
 ```
@@ -124,7 +128,15 @@ rtk-index gain --reset            # borra el historial
   symbol_lookup          38     301.0K      22.4K      93%      42ms
 ```
 
-Además, cada respuesta que la IA recibe lleva su propio pie: `[42 ms · ahorro ~91% (~1834 tokens)]`.
+Además, cada respuesta que la IA recibe lleva su propio pie, con el coste primero y el rival nombrado: `[42 ms · ~180 tokens · −91% vs leer el archivo completo]`.
+
+`--worst` es la vista honesta: ordena por tokens realmente gastados, que es lo que un porcentaje alto puede esconder.
+
+```
+  COSTO     HERRAMIENTA          AHORRO     HACE      MS  DETALLE
+  985       rtk_grep                -1%      26s      18  baseline
+  89        rtk_find                14%      26s       9  . -name *.rs
+```
 
 **Dónde vive y cómo apagarlo.** Un JSONL append-only en `~/.local/share/rtk-index/telemetry.jsonl` (respeta `$XDG_DATA_HOME` y `$RTK_INDEX_DATA_DIR`), compartido entre proyectos y seguro con varios servidores MCP a la vez; rota a los 8 MB. Es 100 % local: no sale nada de tu máquina. Se desactiva con `RTK_INDEX_TELEMETRY=0` — eso también evita los procesos extra que miden el baseline de `rtk_grep`/`rtk_find`/`get_minified_diff`.
 
@@ -174,6 +186,24 @@ Lo más simple es correr `rtk-index init .` (configura `.mcp.json` por ti). Si p
 ```bash
 claude mcp add rtk-index -- /ruta/absoluta/a/rtk-index serve --root /ruta/a/tu/proyecto
 ```
+
+---
+
+## ⚡ Rendimiento: qué cuesta una llamada
+
+Medido sobre un monorepo de 3679 archivos con `RTK_INDEX_TRACE=1` (las trazas van a stderr, no cuestan tokens):
+
+| Fase | Antes | Ahora |
+| :--- | ---: | ---: |
+| `sync` (detectar cambios) | 8388 ms | **150 ms** |
+| carga del modelo ONNX | 1360 ms **por llamada** | 1360 ms **una vez por sesión** |
+| warm-up del índice semántico | 8-11 s por búsqueda | ≤ 1,2 s (presupuesto de tiempo) |
+| búsqueda real (BM25 + coseno) | 17-58 ms | 17-58 ms |
+| **total, 2ª búsqueda en adelante** | **~9 s** | **~1,1 s** |
+
+Tres cambios lo explican: el workspace queda **cacheado por proceso** (antes cada llamada reabría el índice y recargaba el modelo), `sync` usa un **atajo por `mtime`** en vez de leer y hashear todo el repo, y el calentamiento del índice semántico tiene **presupuesto de tiempo** — antes cada búsqueda pagaba la vectorización de hasta 800 símbolos ajenos a la consulta.
+
+> Si ves `índice semántico calentando (N pendientes)` en las respuestas, corre `rtk-index init .` una vez: vectoriza todo el backlog de golpe en lugar de a cachitos.
 
 ---
 

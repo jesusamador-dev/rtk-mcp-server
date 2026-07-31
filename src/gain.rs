@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 pub fn run(args: &[String]) -> i32 {
     let mut history: Option<usize> = None;
+    let mut worst: Option<usize> = None;
     let mut as_json = false;
     let mut since: Option<u64> = None;
     let mut project: Option<String> = None;
@@ -22,6 +23,15 @@ pub fn run(args: &[String]) -> i32 {
                         i += 1;
                     }
                     None => history = Some(20),
+                }
+            }
+            "--worst" => {
+                match args.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
+                    Some(n) => {
+                        worst = Some(n);
+                        i += 1;
+                    }
+                    None => worst = Some(15),
                 }
             }
             "--json" => as_json = true,
@@ -102,9 +112,10 @@ pub fn run(args: &[String]) -> i32 {
         return 0;
     }
 
-    match history {
-        Some(n) => print_history(&events, n),
-        None => print_summary(&events, since, project.as_deref()),
+    match (history, worst) {
+        (Some(n), _) => print_history(&events, n),
+        (_, Some(n)) => print_worst(&events, n),
+        _ => print_summary(&events, since, project.as_deref()),
     }
     0
 }
@@ -115,13 +126,16 @@ fn print_help() {
          USO:\n  \
          rtk-index gain                    Resumen global (todo el histórico)\n  \
          rtk-index gain --history [N]      Últimas N llamadas (por defecto 20)\n  \
+         rtk-index gain --worst [N]        Las N llamadas MÁS CARAS en tokens\n  \
          rtk-index gain --since 7d         Filtra por antigüedad (30m · 24h · 7d)\n  \
          rtk-index gain --project .        Solo este workspace\n  \
          rtk-index gain --tool codebase_search\n  \
          rtk-index gain --json             Salida en JSON\n  \
          rtk-index gain --reset            Borra el historial\n\n\
-         El ahorro compara la respuesta real contra el baseline: leer los archivos\n\
-         completos o la salida cruda de grep/find/diff. 1 token ≈ 4 caracteres."
+         El ahorro compara la respuesta real contra el baseline de cada herramienta:\n\
+         leer los archivos completos, o la salida cruda de grep/find/diff. Si tu\n\
+         alternativa real era un grep dirigido, el ahorro es menor —o negativo—.\n\
+         Mira `--worst` para lo que de verdad cuesta. 1 token ≈ 4 caracteres."
     );
 }
 
@@ -239,7 +253,9 @@ fn print_summary(events: &[Event], since: Option<u64>, project: Option<&str>) {
     }
 
     println!(
-        "\n  1 token ≈ 4 caracteres (estimación conservadora) · log: {}",
+        "\n  El baseline es el rival de cada herramienta (archivo completo, salida cruda):\n  \
+         si tu alternativa real era un grep dirigido, el ahorro es menor o negativo.\n  \
+         `--worst` lista lo que más cuesta. 1 token ≈ 4 caracteres · log: {}",
         telemetry::log_path().display()
     );
     println!();
@@ -267,6 +283,36 @@ fn print_history(events: &[Event], n: usize) {
             fmt(e.saved().max(0) as u64),
             e.ms,
             if e.ok { "" } else { "[error] " },
+            e.detail.clone().unwrap_or_default()
+        );
+    }
+    println!();
+}
+
+/// Las llamadas más caras en tokens reales. El % de ahorro puede esconder una
+/// respuesta enorme: esto la saca a la luz.
+fn print_worst(events: &[Event], n: usize) {
+    let mut sorted: Vec<&Event> = events.iter().collect();
+    sorted.sort_by_key(|e| std::cmp::Reverse(e.actual_tokens));
+    sorted.truncate(n);
+    println!("\n  rtk-index gain --worst · las {} llamadas más caras\n", sorted.len());
+    println!(
+        "  {:<9} {:<18} {:>8} {:>8} {:>7}  {}",
+        "COSTO", "HERRAMIENTA", "AHORRO", "HACE", "MS", "DETALLE"
+    );
+    for e in sorted {
+        let pct = if e.baseline_tokens == 0 {
+            0.0
+        } else {
+            e.saved() as f64 * 100.0 / e.baseline_tokens as f64
+        };
+        println!(
+            "  {:<9} {:<18} {:>7.0}% {:>8} {:>7}  {}",
+            fmt(e.actual_tokens),
+            e.tool,
+            pct,
+            human_ago(e.ts),
+            e.ms,
             e.detail.clone().unwrap_or_default()
         );
     }

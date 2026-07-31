@@ -27,6 +27,7 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
                 path
             ),
             baseline,
+            "leer el archivo completo",
             path,
         ));
     }
@@ -40,7 +41,12 @@ pub fn execute(params: &Value) -> Result<ToolResult, String> {
             truncate(&s.signature, 100)
         ));
     }
-    Ok(ToolResult::text(lines.join("\n"), baseline, path))
+    Ok(ToolResult::text(
+        lines.join("\n"),
+        baseline,
+        "leer el archivo completo",
+        path,
+    ))
 }
 
 fn truncate(s: &str, max: usize) -> String {

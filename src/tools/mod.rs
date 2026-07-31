@@ -19,16 +19,26 @@ pub struct ToolResult {
     /// puede medir se usa el tamaño de la propia respuesta (0 % de ahorro), de
     /// modo que la telemetría nunca infle el resultado.
     pub baseline_chars: usize,
+    /// Contra QUÉ se compara, dicho en corto ("leer el archivo completo",
+    /// "grep -rn crudo"). Sin esto, un "85 % de ahorro" no significa nada: el
+    /// rival puede ser algo que nadie iba a ejecutar.
+    pub baseline_label: &'static str,
     /// Etiqueta corta para el historial (la query, el símbolo, el archivo…).
     pub detail: Option<String>,
 }
 
 impl ToolResult {
-    /// Respuesta de texto con un baseline explícito.
-    pub fn text(body: String, baseline_chars: usize, detail: impl Into<String>) -> Self {
+    /// Respuesta de texto con un baseline explícito y nombrado.
+    pub fn text(
+        body: String,
+        baseline_chars: usize,
+        baseline_label: &'static str,
+        detail: impl Into<String>,
+    ) -> Self {
         ToolResult {
             value: json!({ "content": [{ "type": "text", "text": body }] }),
             baseline_chars,
+            baseline_label,
             detail: Some(detail.into()),
         }
     }
@@ -36,7 +46,7 @@ impl ToolResult {
     /// Respuesta de texto sin ahorro medible: el baseline es la propia salida.
     pub fn text_no_gain(body: String, detail: impl Into<String>) -> Self {
         let baseline = body.len();
-        ToolResult::text(body, baseline, detail)
+        ToolResult::text(body, baseline, "sin alternativa más barata", detail)
     }
 }
 

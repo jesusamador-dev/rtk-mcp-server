@@ -28,7 +28,7 @@ pub fn execute(_params: &Value) -> Result<ToolResult, String> {
             } else {
                 diff.len()
             };
-            Ok(ToolResult::text(diff, baseline, "git diff"))
+            Ok(ToolResult::text(diff, baseline, "git diff nativo", "git diff"))
         }
         Err(e) => Err(format!("Failed to execute git diff: {}", e)),
     }
